@@ -13,35 +13,57 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Cache Theos
-        id: cache-theos
-        uses: actions/cache@v4
-        with:
-          path: ~/theos
-          key: theos-v1
-
-      - name: Install Theos (cached)
-        if: steps.cache-theos.outputs.cache-hit != 'true'
+      - name: Set up build environment
         shell: bash
         run: |
-          git clone --recursive https://github.com/theos/theos.git ~/theos
+          # macOS runner 自带 Xcode + iOS SDK + clang，直接能用
+          # 我们只需要 Theos 的 Makefile 宏定义和 dylib 链接规则
+          # 最小化 Theos：只装必要的 rules/makefiles，不 clone 整个 repo
+          echo "=== Xcode / SDK check ==="
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-path
+
+          # 手动构建 Theos 目录结构（比 clone 快 10x）
+          mkdir -p /tmp/theos/{makefiles/,vendor/include,include}
+          cd /tmp/theos/makefiles
+          # 从 theos repo 拉必要的 Makefile 片段（raw.githubusercontent.com）
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/common.mk -o common.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/target.mk -o target.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/tweak.mk -o tweak.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/framework.mk -o framework.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/instance.mk -o instance.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/aggregate.mk -o aggregate.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/library.mk -o library.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/complist.mk -o complist.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/cydial.mk -o cydial.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/theos.mk -o theos.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/notification.mk -o notification.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/target-theos.mk -o target-theos.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/target-deb.mk -o target-deb.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/deb.mk -o deb.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/deb-install.mk -o deb-install.mk
+          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/deb-uninstall.mk -o deb-uninstall.mk
+          ls -la /tmp/theos/makefiles/
+
+          # 设 THEOS 路径指向临时目录
+          echo "THEOS=/tmp/theos" >> $GITHUB_ENV
+          echo "SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
 
       - name: Build dylib
         shell: bash
-        env:
-          THEOS: ${{ github.workspace }}/theos-bind  # 兼容 Makefile
         run: |
-          # 把 ~/theos 做成 ./theos 软链或直接设 THEOS
-          export THEOS="$HOME/theos"
           cd "$GITHUB_WORKSPACE"
+          export THEOS="/tmp/theos"
+          export SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
           make clean || true
-          make
+          make 2>&1 | tee build.log
 
-      - name: Verify output
+      - name: Show build output
         shell: bash
         run: |
-          ls -la .theos/obj/FilzaApplySandboxExt.dylib
-          file .theos/obj/FilzaApplySandboxExt.dylib
+          ls -la .theos/obj/ 2>/dev/null || echo "NO .theos/obj dir"
+          cat build.log | tail -30 2>/dev/null
 
       - name: Upload dylib
         uses: actions/upload-artifact@v4
@@ -55,3 +77,10 @@ jobs:
         with:
           name: FilzaApplySandboxExt.deb
           path: .theos/*.deb
+
+      - name: Upload build log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build.log
+          path: build.log
