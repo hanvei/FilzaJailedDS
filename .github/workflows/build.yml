@@ -24,58 +24,43 @@ jobs:
           SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDKROOT=$SDKROOT"
 
-          # 源文件列表（与 Makefile 完全一致）
-          SRC_FILES=(
-            Tweak.m sandbox_escape.m apfs_own.m
-            kexploit/kexploit_opa334.m kexploit/krw.m kexploit/kutils.m kexploit/offsets.m kexploit/vnode.m
-            utils/file.c utils/hexdump.c utils/process.c
-            kpf/patchfinder.m
-            XPF/src/xpf.c XPF/src/common.c XPF/src/decompress.c XPF/src/bad_recovery.c XPF/src/non_ppl.c XPF/src/ppl.c
-            XPF/external/ChOma/src/arm64.c XPF/external/ChOma/src/Base64.c XPF/external/ChOma/src/BufferedStream.c
-            XPF/external/ChOma/src/CodeDirectory.c XPF/external/ChOma/src/CSBlob.c XPF/external/ChOma/src/DER.c
-            XPF/external/ChOma/src/DyldSharedCache.c XPF/external/ChOma/src/Entitlements.c XPF/external/ChOma/src/Fat.c
-            XPF/external/ChOma/src/FileStream.c XPF/external/ChOma/src/Host.c XPF/external/ChOma/src/MachO.c
-            XPF/external/ChOma/src/MachOLoadCommand.c XPF/external/ChOma/src/MemoryStream.c XPF/external/ChOma/src/PatchFinder.c
-            XPF/external/ChOma/src/PatchFinder_arm64.c XPF/external/ChOma/src/Util.c
-          )
+          # Source files (matching Makefile exactly)
+          SRC_FILES="Tweak.m sandbox_escape.m apfs_own.m \
+            kexploit/kexploit_opa334.m kexploit/krw.m kexploit/kutils.m kexploit/offsets.m kexploit/vnode.m \
+            utils/file.c utils/hexdump.c utils/process.c \
+            kpf/patchfinder.m \
+            XPF/src/xpf.c XPF/src/common.c XPF/src/decompress.c XPF/src/bad_recovery.c XPF/src/non_ppl.c XPF/src/ppl.c \
+            XPF/external/ChOma/src/arm64.c XPF/external/ChOma/src/Base64.c XPF/external/ChOma/src/BufferedStream.c \
+            XPF/external/ChOma/src/CodeDirectory.c XPF/external/ChOma/src/CSBlob.c XPF/external/ChOma/src/DER.c \
+            XPF/external/ChOma/src/DyldSharedCache.c XPF/external/ChOma/src/Entitlements.c XPF/external/ChOma/src/Fat.c \
+            XPF/external/ChOma/src/FileStream.c XPF/external/ChOma/src/Host.c XPF/external/ChOma/src/MachO.c \
+            XPF/external/ChOma/src/MachOLoadCommand.c XPF/external/ChOma/src/MemoryStream.c XPF/external/ChOma/src/PatchFinder.c \
+            XPF/external/ChOma/src/PatchFinder_arm64.c XPF/external/ChOma/src/Util.c"
 
-          # Include 路径（与 Makefile CFLAGS 一致）
-          INCLUDES=(
-            "-I$PWD"
-            "-I$PWD/XPF/src"
-            "-I$PWD/XPF/external/ChOma/include"
-          )
+          rm -rf /tmp/objs && mkdir -p /tmp/objs
 
-          # Warning flags (抑制和原版一致)
-          WARNS=(
-            -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable
-            -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers
-            -Wno-deprecated-declarations -Wno-nonportable-include-path -Wno-format
-          )
-
-          rm -f /tmp/objs/*.o 2>/dev/null || true
-          mkdir -p /tmp/objs
-
-          echo "=== Compiling ${{#SRC_FILES[@]}} files ==="
-          for src in "${SRC_FILES[@]}"; do
+          echo "=== Compiling ==="
+          for src in $SRC_FILES; do
             base=$(basename "$src")
             out="/tmp/objs/${base}.o"
             if [[ "$src" == *.m ]]; then
               LANG=objectivec
-              OBJC_FLAGS=(-ObjC -fobjc-arc)
+              OBJC_OPTS="-ObjC -fobjc-arc"
             else
               LANG=c
-              OBJC_FLAGS=()
+              OBJC_OPTS=""
             fi
             echo "CC $src"
             xcrun clang -x "$LANG" \
               -arch arm64 \
               -fPIC \
-              "${OBJC_FLAGS[@]}" \
+              $OBJC_OPTS \
               -mios-version-min=15.0 \
               -isysroot "$SDKROOT" \
-              "${INCLUDES[@]}" \
-              "${WARNS[@]}" \
+              -I. -I./XPF/src -I./XPF/external/ChOma/include \
+              -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable \
+              -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers \
+              -Wno-deprecated-declarations -Wno-nonportable-include-path -Wno-format \
               -o "$out" \
               -c "$src"
           done
@@ -92,7 +77,7 @@ jobs:
             -framework IOKit \
             -framework CoreFoundation \
             -framework IOSurface \
-            -l z -l sandbox \
+            -lz -lsandbox \
             -install_name @executable_path/FilzaApplySandboxExt.dylib \
             -o FilzaApplySandboxExt.dylib \
             $OBJS
