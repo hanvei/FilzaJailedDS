@@ -629,6 +629,26 @@ static void runExploit(void) {
     // Auto-chown runs lazily via the contentsOfDirectoryAtPath: hook: the
     // first time Filza lists anything inside /var/containers/Bundle/Application/
     // <UUID>/<Name>.app, apfs_own_tree fires on that .app in the background.
+
+    // --- NEW: verify Carrier Bundles access after sandbox escape ---
+    int fd_r = open("/var/mobile/Library/Carrier Bundles", O_RDONLY);
+    if (fd_r >= 0) {
+        close(fd_r);
+        NSLog(@"[Tweak] ✅ Carrier Bundles 可读");
+
+        // Try a write path to confirm DAC also lets us through
+        int fd_w = open("/var/mobile/Library/Carrier Bundles/.dsh_write_test", O_RDWR|O_CREAT, 0644);
+        if (fd_w >= 0) {
+            close(fd_w); unlink("/var/mobile/Library/Carrier Bundles/.dsh_write_test");
+            NSLog(@"[Tweak] ✅ Carrier Bundles 可写 — apfs_mod_tree / apfs_setflag 应该通");
+        } else {
+            NSLog(@"[Tweak] ⚠️ Carrier Bundles open(O_WRONLY) 失败 errno=%d (%s) — "
+                  @"sandbox_elevate_to_root 可能未成功, DAC 仍在拦截", errno, strerror(errno));
+        }
+    } else {
+        NSLog(@"[Tweak] ❌ Carrier Bundles open(O_RDONLY) 失败 errno=%d (%s) — "
+              @"sandbox_escape 未完全生效，路径仍被 Seatbelt 拦截", errno, strerror(errno));
+    }
 }
 
 #pragma mark - Entry Point
