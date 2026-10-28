@@ -1,0 +1,45 @@
+name: Build FilzaApplySandboxExt
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Theos
+        shell: bash
+        run: |
+          git clone --recursive https://github.com/theos/theos.git ~/theos
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+
+      - name: Build dylib
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          make clean || true
+          make
+
+      - name: Verify output
+        shell: bash
+        run: |
+          ls -la .theos/obj/FilzaApplySandboxExt.dylib
+          file .theos/obj/FilzaApplySandboxExt.dylib
+
+      - name: Upload dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: FilzaApplySandboxExt.dylib
+          path: .theos/obj/FilzaApplySandboxExt.dylib
+
+      - name: Upload deb (optional)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: FilzaApplySandboxExt.deb
+          path: .theos/*.deb
