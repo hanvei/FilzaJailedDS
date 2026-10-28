@@ -338,3 +338,137 @@ int apfs_mod(const char *path, mode_t mode) {
     NSLog(@"[APFS] mod: %s -> 0%o", path, mode);
     return 0;
 }
+
+#pragma mark - Tree walkers (new additions)
+
+// Fast-path chmod: skip stat/sync per entry.
+// Used by the bulk tree walker; callers who need per-entry validation
+// should use apfs_mod() directly.
+static int apfs_mod_unsafe(const char *path, mode_t mode) {
+    uint64_t fs_node = get_fsnode(path);
+    if (!fs_node) return -1;
+
+    kwrite16(fs_node + offsetof(struct apfs_fsnode, mode), (uint16_t)mode);
+
+    // Kernel-side read-back to confirm write landed.
+    uint16_t after = kread16(fs_node + offsetof(struct apfs_fsnode, mode));
+    return (after == (uint16_t)mode) ? 0 : -1;
+}
+
+static long mod_walk(const char *path, mode_t mode, int depth,
+                     long *skipped_lstat, long *skipped_mod, long *skipped_opendir) {
+    if (depth > 32) return 0;
+
+    struct stat st;
+    if (lstat(path, &st) != 0) { (*skipped_lstat)++; return 0; }
+    if (S_ISLNK(st.st_mode)) return 0;
+
+    long n = 0;
+    int rc = apfs_mod_unsafe(path, mode);
+    if (rc == 0) {
+        n++;
+        if (n <= 5) {
+            NSLog(@"[APFS] chmod'd: %s -> 0%o", path, mode);
+        }
+    } else {
+        (*skipped_mod)++;
+        if (*skipped_mod <= 5) {
+            NSLog(@"[APFS] skipped mod: %s (errno=%d)", path, errno);
+        }
+    }
+
+    if (S_ISDIR(st.st_mode)) {
+        DIR *d = opendir(path);
+        if (!d) {
+            (*skipped_opendir)++;
+            if (*skipped_opendir <= 5)
+                NSLog(@"[APFS] skipped opendir: %s (errno=%d)", path, errno);
+            return n;
+        }
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+            if (is_skip_name(e->d_name)) continue;
+            char child[PATH_MAX];
+            int len = snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
+            if (len <= 0 || len >= (int)sizeof(child)) continue;
+            n += mod_walk(child, mode, depth + 1,
+                          skipped_lstat, skipped_mod, skipped_opendir);
+        }
+        closedir(d);
+    }
+    return n;
+}
+
+long apfs_mod_tree(const char *root, mode_t mode) {
+    NSLog(@"[APFS] mod_tree: walking %s -> 0%o", root, mode);
+    long skipped_lstat = 0, skipped_mod = 0, skipped_opendir = 0;
+    long n = mod_walk(root, mode, 0,
+                      &skipped_lstat, &skipped_mod, &skipped_opendir);
+    sync(); sync(); sync();
+    NSLog(@"[APFS] mod_tree: chmod'd %ld entries under %s "
+          "(skipped: lstat=%ld mod=%ld opendir=%ld)",
+          n, root, skipped_lstat, skipped_mod, skipped_opendir);
+    return n;
+}
+
+// ---- setflag (BSD file flags: immutable, append-only, etc.) ----
+
+int apfs_setflag(const char *path, uint32_t new_flags) {
+    uint64_t fs_node = get_fsnode(path);
+    if (!fs_node) {
+        NSLog(@"[APFS] setflag: unable to get fs_node: %s", path);
+        return -1;
+    }
+
+    uint32_t before = kread32(fs_node + offsetof(struct apfs_fsnode, bsd_flags));
+    uint32_t merged = before | new_flags;
+    kwrite32(fs_node + offsetof(struct apfs_fsnode, bsd_flags), merged);
+    sync(); sync(); sync();
+
+    uint32_t after = kread32(fs_node + offsetof(struct apfs_fsnode, bsd_flags));
+    NSLog(@"[APFS] setflag: %s 0x%x -> 0x%x", path, before, after);
+    return 0;
+}
+
+static long setflag_walk(const char *path, uint32_t new_flags, int depth,
+                         long *skipped_lstat, long *skipped_set, long *skipped_opendir) {
+    if (depth > 32) return 0;
+
+    struct stat st;
+    if (lstat(path, &st) != 0) { (*skipped_lstat)++; return 0; }
+    if (S_ISLNK(st.st_mode)) return 0;
+
+    long n = 0;
+    if (apfs_setflag(path, new_flags) == 0) n++;
+    else (*skipped_set)++;
+
+    if (S_ISDIR(st.st_mode)) {
+        DIR *d = opendir(path);
+        if (!d) { (*skipped_opendir)++; return n; }
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+            if (is_skip_name(e->d_name)) continue;
+            char child[PATH_MAX];
+            int len = snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
+            if (len <= 0 || len >= (int)sizeof(child)) continue;
+            n += setflag_walk(child, new_flags, depth + 1,
+                              skipped_lstat, skipped_set, skipped_opendir);
+        }
+        closedir(d);
+    }
+    return n;
+}
+
+long apfs_setflag_tree(const char *root, uint32_t new_flags) {
+    NSLog(@"[APFS] setflag_tree: walking %s -> 0x%x", root, new_flags);
+    long skipped_lstat = 0, skipped_set = 0, skipped_opendir = 0;
+    long n = setflag_walk(root, new_flags, 0,
+                           &skipped_lstat, &skipped_set, &skipped_opendir);
+    sync(); sync(); sync();
+    NSLog(@"[APFS] setflag_tree: flagged %ld entries under %s "
+          "(skipped: lstat=%ld set=%ld opendir=%ld)",
+          n, root, skipped_lstat, skipped_set, skipped_opendir);
+    return n;
+}
