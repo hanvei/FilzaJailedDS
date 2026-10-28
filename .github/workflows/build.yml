@@ -8,19 +8,31 @@ on:
 jobs:
   build:
     runs-on: macos-14
+    timeout-minutes: 30
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Install Theos
+      - name: Cache Theos
+        id: cache-theos
+        uses: actions/cache@v4
+        with:
+          path: ~/theos
+          key: theos-v1
+
+      - name: Install Theos (cached)
+        if: steps.cache-theos.outputs.cache-hit != 'true'
         shell: bash
         run: |
           git clone --recursive https://github.com/theos/theos.git ~/theos
-          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
 
       - name: Build dylib
         shell: bash
+        env:
+          THEOS: ${{ github.workspace }}/theos-bind  # 兼容 Makefile
         run: |
+          # 把 ~/theos 做成 ./theos 软链或直接设 THEOS
+          export THEOS="$HOME/theos"
           cd "$GITHUB_WORKSPACE"
           make clean || true
           make
@@ -37,7 +49,7 @@ jobs:
           name: FilzaApplySandboxExt.dylib
           path: .theos/obj/FilzaApplySandboxExt.dylib
 
-      - name: Upload deb (optional)
+      - name: Upload deb
         uses: actions/upload-artifact@v4
         if: always()
         with:
