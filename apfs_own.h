@@ -24,4 +24,16 @@ uint16_t apfs_getmode_kr(const char *path);
 // chown'd.
 long apfs_own_tree(const char *root, uid_t uid, gid_t gid);
 
+// Change a file or directory tree's mode (permissions) by directly writing
+// apfs_fsnode.mode in kernel memory — same mechanism as apfs_own / apfs_mod.
+// Returns number of entries successfully chmod'd. Syncs once at end.
+long apfs_mod_tree(const char *root, mode_t mode);
+
+// Set BSD file flags (uf_immutable, uf_append, etc.) on a single file.
+// Merges (ORs) new_flags into existing bsd_flags on the fsnode.
+int apfs_setflag(const char *path, uint32_t new_flags);
+
+// Recursively set BSD flags under a directory tree.
+long apfs_setflag_tree(const char *root, uint32_t new_flags);
+
 #endif /* apfs_own_h */
