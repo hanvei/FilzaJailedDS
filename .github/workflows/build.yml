@@ -12,75 +12,96 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: Set up build environment
+      - name: Build with raw clang + Xcode iOS SDK
         shell: bash
         run: |
-          # macOS runner 自带 Xcode + iOS SDK + clang，直接能用
-          # 我们只需要 Theos 的 Makefile 宏定义和 dylib 链接规则
-          # 最小化 Theos：只装必要的 rules/makefiles，不 clone 整个 repo
-          echo "=== Xcode / SDK check ==="
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
-          xcrun --sdk iphoneos --show-sdk-path
-
-          # 手动构建 Theos 目录结构（比 clone 快 10x）
-          mkdir -p /tmp/theos/{makefiles/,vendor/include,include}
-          cd /tmp/theos/makefiles
-          # 从 theos repo 拉必要的 Makefile 片段（raw.githubusercontent.com）
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/common.mk -o common.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/target.mk -o target.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/tweak.mk -o tweak.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/framework.mk -o framework.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/instance.mk -o instance.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/aggregate.mk -o aggregate.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/library.mk -o library.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/complist.mk -o complist.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/cydial.mk -o cydial.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/theos.mk -o theos.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/notification.mk -o notification.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/target-theos.mk -o target-theos.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/target-deb.mk -o target-deb.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/deb.mk -o deb.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/deb-install.mk -o deb-install.mk
-          curl -sL https://raw.githubusercontent.com/theos/theos/master/makefiles/deb-uninstall.mk -o deb-uninstall.mk
-          ls -la /tmp/theos/makefiles/
-
-          # 设 THEOS 路径指向临时目录
-          echo "THEOS=/tmp/theos" >> $GITHUB_ENV
-          echo "SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
-
-      - name: Build dylib
-        shell: bash
-        run: |
+          set -e
           cd "$GITHUB_WORKSPACE"
-          export THEOS="/tmp/theos"
-          export SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
-          make clean || true
-          make 2>&1 | tee build.log
 
-      - name: Show build output
-        shell: bash
-        run: |
-          ls -la .theos/obj/ 2>/dev/null || echo "NO .theos/obj dir"
-          cat build.log | tail -30 2>/dev/null
+          SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDKROOT=$SDKROOT"
+
+          # 源文件列表（与 Makefile 完全一致）
+          SRC_FILES=(
+            Tweak.m sandbox_escape.m apfs_own.m
+            kexploit/kexploit_opa334.m kexploit/krw.m kexploit/kutils.m kexploit/offsets.m kexploit/vnode.m
+            utils/file.c utils/hexdump.c utils/process.c
+            kpf/patchfinder.m
+            XPF/src/xpf.c XPF/src/common.c XPF/src/decompress.c XPF/src/bad_recovery.c XPF/src/non_ppl.c XPF/src/ppl.c
+            XPF/external/ChOma/src/arm64.c XPF/external/ChOma/src/Base64.c XPF/external/ChOma/src/BufferedStream.c
+            XPF/external/ChOma/src/CodeDirectory.c XPF/external/ChOma/src/CSBlob.c XPF/external/ChOma/src/DER.c
+            XPF/external/ChOma/src/DyldSharedCache.c XPF/external/ChOma/src/Entitlements.c XPF/external/ChOma/src/Fat.c
+            XPF/external/ChOma/src/FileStream.c XPF/external/ChOma/src/Host.c XPF/external/ChOma/src/MachO.c
+            XPF/external/ChOma/src/MachOLoadCommand.c XPF/external/ChOma/src/MemoryStream.c XPF/external/ChOma/src/PatchFinder.c
+            XPF/external/ChOma/src/PatchFinder_arm64.c XPF/external/ChOma/src/Util.c
+          )
+
+          # Include 路径（与 Makefile CFLAGS 一致）
+          INCLUDES=(
+            "-I$PWD"
+            "-I$PWD/XPF/src"
+            "-I$PWD/XPF/external/ChOma/include"
+          )
+
+          # Warning flags (抑制和原版一致)
+          WARNS=(
+            -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable
+            -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers
+            -Wno-deprecated-declarations -Wno-nonportable-include-path -Wno-format
+          )
+
+          rm -f /tmp/objs/*.o 2>/dev/null || true
+          mkdir -p /tmp/objs
+
+          echo "=== Compiling ${{#SRC_FILES[@]}} files ==="
+          for src in "${SRC_FILES[@]}"; do
+            base=$(basename "$src")
+            out="/tmp/objs/${base}.o"
+            if [[ "$src" == *.m ]]; then
+              LANG=objectivec
+              OBJC_FLAGS=(-ObjC -fobjc-arc)
+            else
+              LANG=c
+              OBJC_FLAGS=()
+            fi
+            echo "CC $src"
+            xcrun clang -x "$LANG" \
+              -arch arm64 \
+              -fPIC \
+              "${OBJC_FLAGS[@]}" \
+              -mios-version-min=15.0 \
+              -isysroot "$SDKROOT" \
+              "${INCLUDES[@]}" \
+              "${WARNS[@]}" \
+              -o "$out" \
+              -c "$src"
+          done
+
+          echo "=== Linking ==="
+          OBJS=$(ls /tmp/objs/*.o | tr '\n' ' ')
+          echo "Linking $(ls /tmp/objs/*.o | wc -l) .o files..."
+          xcrun clang -dynamiclib \
+            -arch arm64 \
+            -isysroot "$SDKROOT" \
+            -mios-version-min=15.0 \
+            -framework Foundation \
+            -framework UIKit \
+            -framework IOKit \
+            -framework CoreFoundation \
+            -framework IOSurface \
+            -l z -l sandbox \
+            -install_name @executable_path/FilzaApplySandboxExt.dylib \
+            -o FilzaApplySandboxExt.dylib \
+            $OBJS
+          echo "=== Done ==="
+          ls -la FilzaApplySandboxExt.dylib
+          file FilzaApplySandboxExt.dylib
 
       - name: Upload dylib
         uses: actions/upload-artifact@v4
         with:
           name: FilzaApplySandboxExt.dylib
-          path: .theos/obj/FilzaApplySandboxExt.dylib
-
-      - name: Upload deb
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: FilzaApplySandboxExt.deb
-          path: .theos/*.deb
-
-      - name: Upload build log
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: build.log
-          path: build.log
+          path: FilzaApplySandboxExt.dylib
