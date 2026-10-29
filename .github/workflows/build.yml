@@ -15,21 +15,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install iOS private headers (fileport.h etc)
-        shell: bash
-        run: |
-          set -e
-          # Download Theos iOS headers (includes private headers like sys/fileport.h)
-          curl -sL https://github.com/theos/headers/archive/refs/heads/master.tar.gz -o /tmp/ios-headers.tar.gz
-          tar xf /tmp/ios-headers.tar.gz -C /tmp/
-          ls /tmp/headers-master/sys/fileport.h 2>/dev/null && echo "fileport.h found!" || echo "not found"
-          # Copy into SDK
-          SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
-          sudo cp -r /tmp/headers-master/sys "$SDKROOT/usr/include/" 2>/dev/null || true
-          sudo cp -r /tmp/headers-master/mach "$SDKROOT/usr/include/" 2>/dev/null || true
-          sudo cp -r /tmp/headers-master/IOKit "$SDKROOT/System/Library/Frameworks/" 2>/dev/null || true
-          echo "Headers installed"
-
       - name: Build with raw clang + Xcode iOS SDK
         shell: bash
         run: |
@@ -54,7 +39,7 @@ jobs:
 
           rm -rf /tmp/objs && mkdir -p /tmp/objs
 
-          INCLUDES="-I. -I./XPF/src -I./XPF/external/ChOma/include -I/tmp/headers-master"
+          INCLUDES="-I. -I./XPF/src -I./XPF/external/ChOma/include"
           WARNS="-Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers -Wno-deprecated-declarations -Wno-nonportable-include-path -Wno-format -Wno-arc-performSelector-leaks"
 
           echo "=== Compiling ObjC files ==="
@@ -84,7 +69,7 @@ jobs:
           xcrun clang -dynamiclib -arch arm64 -isysroot "$SDKROOT" \
             -mios-version-min=15.0 \
             -framework Foundation -framework UIKit -framework IOKit -framework CoreFoundation -framework IOSurface \
-            -lz -lsandbox \
+            -lz -lsandbox -lcompression \
             -install_name @executable_path/FilzaApplySandboxExt.dylib \
             -o FilzaApplySandboxExt.dylib \
             $OBJS
