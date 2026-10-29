@@ -24,13 +24,10 @@ jobs:
           SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDKROOT=$SDKROOT"
 
-          # --- All source files (matching Makefile exactly) ---
-          # ObjC files
           OBJC_SRCS="Tweak.m sandbox_escape.m apfs_own.m \
             kexploit/kexploit_opa334.m kexploit/krw.m kexploit/kutils.m kexploit/offsets.m kexploit/vnode.m \
             kpf/patchfinder.m"
 
-          # C files
           C_SRCS="utils/file.c utils/hexdump.c utils/process.c \
             XPF/src/xpf.c XPF/src/common.c XPF/src/decompress.c XPF/src/bad_recovery.c XPF/src/non_ppl.c XPF/src/ppl.c \
             XPF/external/ChOma/src/arm64.c XPF/external/ChOma/src/Base64.c XPF/external/ChOma/src/BufferedStream.c \
@@ -43,13 +40,14 @@ jobs:
           rm -rf /tmp/objs && mkdir -p /tmp/objs
 
           INCLUDES="-I. -I./XPF/src -I./XPF/external/ChOma/include"
-          WARNS="-Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers -Wno-deprecated-declarations -Wno-nonportable-include-path -Wno-format"
+          WARNS="-Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers -Wno-deprecated-declarations -Wno-nonportable-include-path -Wno-format -Wno-arc-performSelector-leaks"
 
           echo "=== Compiling ObjC files ==="
           for src in $OBJC_SRCS; do
             out="/tmp/objs/$(basename "$src").o"
             echo "CC $src"
-            xcrun clang -x objective-c -arch arm64 -fPIC -ObjC -fobjc-arc \
+            xcrun clang -x objective-c -arch arm64 -fPIC \
+              -fmodules -fobjc-arc \
               -mios-version-min=15.0 -isysroot "$SDKROOT" \
               $INCLUDES $WARNS \
               -o "$out" -c "$src"
