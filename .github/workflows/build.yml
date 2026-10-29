@@ -15,7 +15,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Build with raw clang + Xcode iOS SDK
+      - name: Build arm64 + arm64e dual-slice dylib
         shell: bash
         run: |
           set -e
@@ -37,46 +37,55 @@ jobs:
             XPF/external/ChOma/src/MachOLoadCommand.c XPF/external/ChOma/src/MemoryStream.c XPF/external/ChOma/src/PatchFinder.c \
             XPF/external/ChOma/src/PatchFinder_arm64.c XPF/external/ChOma/src/Util.c"
 
-          rm -rf /tmp/objs && mkdir -p /tmp/objs
-
           INCLUDES="-I. -I./XPF/src -I./XPF/external/ChOma/include"
           WARNS="-Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers -Wno-deprecated-declarations -Wno-nonportable-include-path -Wno-format -Wno-arc-performSelector-leaks"
 
-          echo "=== Compiling ObjC files ==="
-          for src in $OBJC_SRCS; do
-            out="/tmp/objs/$(basename "$src").o"
-            echo "CC $src"
-            xcrun clang -x objective-c -arch arm64 -fPIC \
-              -fmodules -fobjc-arc \
-              -mios-version-min=15.0 -isysroot "$SDKROOT" \
-              $INCLUDES $WARNS \
-              -o "$out" -c "$src"
+          # === Compile BOTH archs ===
+          for ARCH in arm64 arm64e; do
+            echo ""
+            echo "========== $ARCH =========="
+            rm -rf /tmp/objs_$ARCH && mkdir -p /tmp/objs_$ARCH
+
+            echo "--- ObjC ---"
+            for src in $OBJC_SRCS; do
+              out="/tmp/objs_$ARCH/$(basename "$src").o"
+              xcrun clang -x objective-c -arch $ARCH -fPIC \
+                -fmodules -fobjc-arc \
+                -mios-version-min=15.0 -isysroot "$SDKROOT" \
+                $INCLUDES $WARNS \
+                -o "$out" -c "$src" 2>&1 | tail -3 || { echo "FAIL: $src"; exit 1; }
+            done
+
+            echo "--- C ---"
+            for src in $C_SRCS; do
+              out="/tmp/objs_$ARCH/$(basename "$src").o"
+              xcrun clang -x c -arch $ARCH -fPIC \
+                -mios-version-min=15.0 -isysroot "$SDKROOT" \
+                $INCLUDES $WARNS \
+                -o "$out" -c "$src" 2>&1 | tail -3 || { echo "FAIL: $src"; exit 1; }
+            done
+
+            echo "--- Linking $ARCH ---"
+            OBJS=$(ls /tmp/objs_$ARCH/*.o | tr '\n' ' ')
+            xcrun clang -dynamiclib -arch $ARCH -isysroot "$SDKROOT" \
+              -mios-version-min=15.0 \
+              -framework Foundation -framework UIKit -framework IOKit -framework CoreFoundation -framework IOSurface \
+              -lz -lsandbox -lcompression \
+              -install_name @executable_path/FilzaApplySandboxExt.dylib \
+              -o /tmp/FilzaApplySandboxExt_$ARCH.dylib \
+              $OBJS 2>&1 | tail -3 || { echo "LINK FAIL $ARCH"; exit 1; }
+
+            ls -la /tmp/FilzaApplySandboxExt_$ARCH.dylib
           done
 
-          echo "=== Compiling C files ==="
-          for src in $C_SRCS; do
-            out="/tmp/objs/$(basename "$src").o"
-            echo "CC $src"
-            xcrun clang -x c -arch arm64 -fPIC \
-              -mios-version-min=15.0 -isysroot "$SDKROOT" \
-              $INCLUDES $WARNS \
-              -o "$out" -c "$src"
-          done
-
-          echo "=== Linking ==="
-          OBJS=$(ls /tmp/objs/*.o | tr '\n' ' ')
-          echo "Linking $(ls /tmp/objs/*.o | wc -l) .o files..."
-          xcrun clang -dynamiclib -arch arm64 -isysroot "$SDKROOT" \
-            -mios-version-min=15.0 \
-            -framework Foundation -framework UIKit -framework IOKit -framework CoreFoundation -framework IOSurface \
-            -lz -lsandbox -lcompression \
-            -install_name @executable_path/FilzaApplySandboxExt.dylib \
-            -o FilzaApplySandboxExt.dylib \
-            $OBJS
-
-          echo "=== Done ==="
+          # === Lipo 合成双切片 ===
+          echo ""
+          echo "=== Lipo arm64 + arm64e ==="
+          xcrun lipo -create /tmp/FilzaApplySandboxExt_arm64.dylib /tmp/FilzaApplySandboxExt_arm64e.dylib \
+            -output FilzaApplySandboxExt.dylib
           ls -la FilzaApplySandboxExt.dylib
-          file FilzaApplySandboxExt.dylib
+          xcrun lipo -info FilzaApplySandboxExt.dylib
+          xcrun otool -L FilzaApplySandboxExt.dylib | head -10
 
       - name: Upload dylib
         uses: actions/upload-artifact@v4
