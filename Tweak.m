@@ -1,5 +1,9 @@
 ﻿@import UIKit;
 #import <objc/runtime.h>
+#include <dirent.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #import <objc/message.h>
 #import <xpc/xpc.h>
 
