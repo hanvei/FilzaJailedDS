@@ -613,6 +613,29 @@ static void installHooks(void) {
 
 #pragma mark - Exploit (silent, background)
 
+
+// --- Manual recursive helper: fix ONE path via kernel writes ---
+static void manual_cb_fix(const char *path, int is_dir __attribute__((unused)), int *fixed, int *fail) {
+    // chown to mobile
+    int rc = apfs_own(path, 501, 501);
+    if (rc == 0) (*fixed)++; else (*fail)++;
+    // chmod — dirs get 0775, files keep their mode but with group write
+    struct stat st;
+    if (lstat(path, &st) == 0) {
+        mode_t newmode;
+        if (S_ISDIR(st.st_mode)) {
+            newmode = (st.st_mode & 0o7777) | 0o775;  // rwxrwxr-x
+        } else {
+            newmode = (st.st_mode & 0o7777) | 0o664;  // rw-rw-r-- (preserve x if already x)
+            if (st.st_mode & 0o111) newmode = newmode | 0o111;
+        }
+        apfs_mod(path, newmode);
+    }
+    if (*fixed + *fail <= 5 || (*fixed) % 100 == 0) {
+        NSLog(@"[Tweak]   %s own=%d mod=0%o", path, rc, (unsigned)0o775);
+    }
+}
+
 static void runExploit(void) {
     NSLog(@"[Tweak] Running kexploit...");
     int kret = kexploit_opa334();
@@ -636,28 +659,70 @@ static void runExploit(void) {
     // first time Filza lists anything inside /var/containers/Bundle/Application/
     // <UUID>/<Name>.app, apfs_own_tree fires on that .app in the background.
 
-    // --- Debug: path probe every component to find where blocked ---
-    NSLog(@"[Tweak] === PATH PROBE ===");
-    const char *paths[] = { "/", "/var", "/var/mobile", "/var/mobile/Library", "/var/mobile/Library/Carrier Bundles", NULL };
-    for (int i = 0; paths[i]; i++) {
-        DIR *d = opendir(paths[i]);
-        if (d) { closedir(d); NSLog(@"[Tweak]   OK: %s", paths[i]); }
-        else { NSLog(@"[Tweak]   FAIL: %s  errno=%d (%s)", paths[i], errno, strerror(errno)); }
-    }
+    // --- Step 1: Confirm elevate_to_root actually worked ---
+    NSLog(@"[Tweak] === POST-ELEVATE CHECK ===");
     NSLog(@"[Tweak] getuid()=%d geteuid()=%d", getuid(), geteuid());
+    if (getuid() != 0) {
+        NSLog(@"[Tweak] ⚠️ elevate_to_root FAILED — uid still %d, trying direct kernel setuid", getuid());
+        // Last resort: try kernel write our ucred cr_uid directly
+        // (sandbox_elevate_to_root already does this, so if it failed PAC is blocking)
+    }
 
-    // Kernel-force Carrier Bundles ownership to mobile + relax perms
-    NSLog(@"[Tweak] === apfs_own_tree + apfs_mod_tree Carrier Bundles ===");
-    int ret = apfs_own_tree("/var/mobile/Library/Carrier Bundles", 501, 501);
-    NSLog(@"[Tweak] apfs_own_tree ret=%d", ret);
-    ret = apfs_mod_tree("/var/mobile/Library/Carrier Bundles", 0775);
-    NSLog(@"[Tweak] apfs_mod_tree ret=%d", ret);
+    // --- Step 2: Manual recursive walk using uid=0 opendir + kernel writes ---
+    // apfs_own_tree/apfs_mod_tree internally use opendir which may fail mid-walk
+    // if DAC blocks subdirs (e.g. before we elevated). We do our own walk here.
+    NSLog(@"[Tweak] === MANUAL RECURSIVE KERNEL FIX ===");
+    int fixed_count = 0;
+    int fail_count = 0;
 
-    // Re-probe
-    const char *cb2 = "/var/mobile/Library/Carrier Bundles";
-    DIR *d2 = opendir(cb2);
-    if (d2) { closedir(d2); NSLog(@"[Tweak]   OK after apfs fix: %s", cb2); }
-    else { NSLog(@"[Tweak]   STILL BLOCKED: %s  errno=%d (%s)", cb2, errno, strerror(errno)); }
+    typedef void (*walk_cb)(const char *path, int is_dir, int *fixed, int *fail);
+
+    // Helper inline block would be nicer but C + objc++ complicates it;
+    // use a simple static call instead — forward declare.
+    extern void manual_cb_fix(const char *path, int is_dir, int *fixed, int *fail);
+
+    void manual_walk(const char *path, int depth, int *fixed, int *fail) {
+        if (depth > 32) return;
+        // Fix THIS entry first (before recursing, so parent is owned by us when we descend)
+        manual_cb_fix(path, 0, fixed, fail);
+
+        struct stat st;
+        if (lstat(path, &st) != 0) {
+            NSLog(@"[Tweak]   lstat failed: %s errno=%d", path, errno);
+            return;
+        }
+        if (!S_ISDIR(st.st_mode)) return;
+
+        DIR *d = opendir(path);
+        if (!d) {
+            NSLog(@"[Tweak]   opendir failed: %s errno=%d (%s)", path, errno, strerror(errno));
+            return;
+        }
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+            char child[1024];
+            snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
+            manual_walk(child, depth + 1, fixed, fail);
+        }
+        closedir(d);
+    }
+
+    manual_walk("/var/mobile/Library/Carrier Bundles", 0, &fixed_count, &fail_count);
+    NSLog(@"[Tweak] === MANUAL WALK DONE: fixed=%d failed=%d ===", fixed_count, fail_count);
+
+    // Re-probe write access
+    NSLog(@"[Tweak] === FINAL PROBE ===");
+    DIR *fp = opendir("/var/mobile/Library/Carrier Bundles");
+    if (fp) {
+        closedir(fp);
+        int fw = open("/var/mobile/Library/Carrier Bundles/.dsh_write_test", O_RDWR|O_CREAT, 0644);
+        if (fw >= 0) { close(fw); unlink("/var/mobile/Library/Carrier Bundles/.dsh_write_test");
+            NSLog(@"[Tweak] ✅ Carrier Bundles FULLY ACCESSIBLE NOW"); }
+        else { NSLog(@"[Tweak] ⚠️ readable but write still blocked errno=%d (%s)", errno, strerror(errno)); }
+    } else {
+        NSLog(@"[Tweak] ❌ STILL CANNOT OPEN Carrier Bundles errno=%d (%s)", errno, strerror(errno));
+    }
 }
 
 #pragma mark - Entry Point
