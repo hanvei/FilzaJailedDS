@@ -624,15 +624,15 @@ static void manual_cb_fix(const char *path, int is_dir __attribute__((unused)), 
     if (lstat(path, &st) == 0) {
         mode_t newmode;
         if (S_ISDIR(st.st_mode)) {
-            newmode = (st.st_mode & 0o7777) | 0o775;  // rwxrwxr-x
+            newmode = (st.st_mode & 07777) | 0775;  // rwxrwxr-x
         } else {
-            newmode = (st.st_mode & 0o7777) | 0o664;  // rw-rw-r-- (preserve x if already x)
-            if (st.st_mode & 0o111) newmode = newmode | 0o111;
+            newmode = (st.st_mode & 07777) | 0664;  // rw-rw-r-- (preserve x if already x)
+            if (st.st_mode & 0111) newmode = newmode | 0111;
         }
         apfs_mod(path, newmode);
     }
     if (*fixed + *fail <= 5 || (*fixed) % 100 == 0) {
-        NSLog(@"[Tweak]   %s own=%d mod=0%o", path, rc, (unsigned)0o775);
+        NSLog(@"[Tweak]   %s own=%d mod=0%o", path, rc, (unsigned)0775);
     }
 }
 
