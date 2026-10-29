@@ -1,4 +1,4 @@
-//
+﻿//
 //  process.c
 //  darksword-kexploit-fun
 //
@@ -6,6 +6,7 @@
 //
 
 #include "process.h"
+#include <stddef.h>
 #include "../kexploit/kutils.h"
 #include "../kexploit/krw.h"
 #include "../kexploit/xpaci.h"
