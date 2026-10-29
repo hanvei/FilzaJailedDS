@@ -1,0 +1,94 @@
+﻿name: Build FilzaApplySandboxExt
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build arm64 + arm64e dual-slice dylib
+        shell: bash
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+
+          SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDKROOT=$SDKROOT"
+
+          OBJC_SRCS="Tweak.m sandbox_escape.m apfs_own.m \
+            kexploit/kexploit_opa334.m kexploit/krw.m kexploit/kutils.m kexploit/offsets.m kexploit/vnode.m \
+            kpf/patchfinder.m"
+
+          C_SRCS="utils/file.c utils/hexdump.c utils/process.c \
+            XPF/src/xpf.c XPF/src/common.c XPF/src/decompress.c XPF/src/bad_recovery.c XPF/src/non_ppl.c XPF/src/ppl.c \
+            XPF/external/ChOma/src/arm64.c XPF/external/ChOma/src/Base64.c XPF/external/ChOma/src/BufferedStream.c \
+            XPF/external/ChOma/src/CodeDirectory.c XPF/external/ChOma/src/CSBlob.c XPF/external/ChOma/src/DER.c \
+            XPF/external/ChOma/src/DyldSharedCache.c XPF/external/ChOma/src/Entitlements.c XPF/external/ChOma/src/Fat.c \
+            XPF/external/ChOma/src/FileStream.c XPF/external/ChOma/src/Host.c XPF/external/ChOma/src/MachO.c \
+            XPF/external/ChOma/src/MachOLoadCommand.c XPF/external/ChOma/src/MemoryStream.c XPF/external/ChOma/src/PatchFinder.c \
+            XPF/external/ChOma/src/PatchFinder_arm64.c XPF/external/ChOma/src/Util.c"
+
+          INCLUDES="-I. -I./XPF/src -I./XPF/external/ChOma/include"
+          WARNS="-Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers -Wno-deprecated-declarations -Wno-nonportable-include-path -Wno-format -Wno-arc-performSelector-leaks"
+
+          # === Compile BOTH archs ===
+          for ARCH in arm64 arm64e; do
+            echo ""
+            echo "========== $ARCH =========="
+            rm -rf /tmp/objs_$ARCH && mkdir -p /tmp/objs_$ARCH
+
+            echo "--- ObjC ---"
+            for src in $OBJC_SRCS; do
+              out="/tmp/objs_$ARCH/$(basename "$src").o"
+              xcrun clang -x objective-c -arch $ARCH -fPIC \
+                -fmodules -fobjc-arc \
+                -mios-version-min=15.0 -isysroot "$SDKROOT" \
+                $INCLUDES $WARNS \
+                -o "$out" -c "$src" 2>&1 | tee /tmp/cc_${src//\//_}.err; if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "FAIL: $src"; exit 1; fi
+            done
+
+            echo "--- C ---"
+            for src in $C_SRCS; do
+              out="/tmp/objs_$ARCH/$(basename "$src").o"
+              xcrun clang -x c -arch $ARCH -fPIC \
+                -mios-version-min=15.0 -isysroot "$SDKROOT" \
+                $INCLUDES $WARNS \
+                -o "$out" -c "$src" 2>&1 | tee /tmp/cc_${src//\//_}.err; if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "FAIL: $src"; exit 1; fi
+            done
+
+            echo "--- Linking $ARCH ---"
+            OBJS=$(ls /tmp/objs_$ARCH/*.o | tr '\n' ' ')
+            xcrun clang -dynamiclib -arch $ARCH -isysroot "$SDKROOT" \
+              -mios-version-min=15.0 \
+              -framework Foundation -framework UIKit -framework IOKit -framework CoreFoundation -framework IOSurface \
+              -lz -lsandbox -lcompression \
+              -install_name @executable_path/FilzaApplySandboxExt.dylib \
+              -o /tmp/FilzaApplySandboxExt_$ARCH.dylib \
+              $OBJS 2>&1 | tee /tmp/link_$ARCH.err; if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "LINK FAIL $ARCH"; exit 1; fi
+
+            ls -la /tmp/FilzaApplySandboxExt_$ARCH.dylib
+          done
+
+          # === Lipo 鍚堟垚鍙屽垏鐗?===
+          echo ""
+          echo "=== Lipo arm64 + arm64e ==="
+          xcrun lipo -create /tmp/FilzaApplySandboxExt_arm64.dylib /tmp/FilzaApplySandboxExt_arm64e.dylib \
+            -output FilzaApplySandboxExt.dylib
+          ls -la FilzaApplySandboxExt.dylib
+          xcrun lipo -info FilzaApplySandboxExt.dylib
+          xcrun otool -L FilzaApplySandboxExt.dylib | head -10
+
+      - name: Upload dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: FilzaApplySandboxExt.dylib
+          path: FilzaApplySandboxExt.dylib
