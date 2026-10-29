@@ -24,11 +24,14 @@ jobs:
           SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDKROOT=$SDKROOT"
 
-          # Source files (matching Makefile exactly)
-          SRC_FILES="Tweak.m sandbox_escape.m apfs_own.m \
+          # --- All source files (matching Makefile exactly) ---
+          # ObjC files
+          OBJC_SRCS="Tweak.m sandbox_escape.m apfs_own.m \
             kexploit/kexploit_opa334.m kexploit/krw.m kexploit/kutils.m kexploit/offsets.m kexploit/vnode.m \
-            utils/file.c utils/hexdump.c utils/process.c \
-            kpf/patchfinder.m \
+            kpf/patchfinder.m"
+
+          # C files
+          C_SRCS="utils/file.c utils/hexdump.c utils/process.c \
             XPF/src/xpf.c XPF/src/common.c XPF/src/decompress.c XPF/src/bad_recovery.c XPF/src/non_ppl.c XPF/src/ppl.c \
             XPF/external/ChOma/src/arm64.c XPF/external/ChOma/src/Base64.c XPF/external/ChOma/src/BufferedStream.c \
             XPF/external/ChOma/src/CodeDirectory.c XPF/external/ChOma/src/CSBlob.c XPF/external/ChOma/src/DER.c \
@@ -39,48 +42,40 @@ jobs:
 
           rm -rf /tmp/objs && mkdir -p /tmp/objs
 
-          echo "=== Compiling ==="
-          for src in $SRC_FILES; do
-            base=$(basename "$src")
-            out="/tmp/objs/${base}.o"
-            if [[ "$src" == *.m ]]; then
-              LANG=objectivec
-              OBJC_OPTS="-ObjC -fobjc-arc"
-            else
-              LANG=c
-              OBJC_OPTS=""
-            fi
+          INCLUDES="-I. -I./XPF/src -I./XPF/external/ChOma/include"
+          WARNS="-Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers -Wno-deprecated-declarations -Wno-nonportable-include-path -Wno-format"
+
+          echo "=== Compiling ObjC files ==="
+          for src in $OBJC_SRCS; do
+            out="/tmp/objs/$(basename "$src").o"
             echo "CC $src"
-            xcrun clang -x "$LANG" \
-              -arch arm64 \
-              -fPIC \
-              $OBJC_OPTS \
-              -mios-version-min=15.0 \
-              -isysroot "$SDKROOT" \
-              -I. -I./XPF/src -I./XPF/external/ChOma/include \
-              -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable \
-              -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers \
-              -Wno-deprecated-declarations -Wno-nonportable-include-path -Wno-format \
-              -o "$out" \
-              -c "$src"
+            xcrun clang -x objective-c -arch arm64 -fPIC -ObjC -fobjc-arc \
+              -mios-version-min=15.0 -isysroot "$SDKROOT" \
+              $INCLUDES $WARNS \
+              -o "$out" -c "$src"
+          done
+
+          echo "=== Compiling C files ==="
+          for src in $C_SRCS; do
+            out="/tmp/objs/$(basename "$src").o"
+            echo "CC $src"
+            xcrun clang -x c -arch arm64 -fPIC \
+              -mios-version-min=15.0 -isysroot "$SDKROOT" \
+              $INCLUDES $WARNS \
+              -o "$out" -c "$src"
           done
 
           echo "=== Linking ==="
           OBJS=$(ls /tmp/objs/*.o | tr '\n' ' ')
           echo "Linking $(ls /tmp/objs/*.o | wc -l) .o files..."
-          xcrun clang -dynamiclib \
-            -arch arm64 \
-            -isysroot "$SDKROOT" \
+          xcrun clang -dynamiclib -arch arm64 -isysroot "$SDKROOT" \
             -mios-version-min=15.0 \
-            -framework Foundation \
-            -framework UIKit \
-            -framework IOKit \
-            -framework CoreFoundation \
-            -framework IOSurface \
+            -framework Foundation -framework UIKit -framework IOKit -framework CoreFoundation -framework IOSurface \
             -lz -lsandbox \
             -install_name @executable_path/FilzaApplySandboxExt.dylib \
             -o FilzaApplySandboxExt.dylib \
             $OBJS
+
           echo "=== Done ==="
           ls -la FilzaApplySandboxExt.dylib
           file FilzaApplySandboxExt.dylib
