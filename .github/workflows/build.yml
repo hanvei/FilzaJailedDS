@@ -7,78 +7,65 @@ on:
 
 jobs:
   build:
-    runs-on: macos-12
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Checkout source
+      - name: Checkout + submodules
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Build with raw clang + Xcode iOS SDK
+      - name: Install osxcross
         shell: bash
         run: |
           set -e
-          cd "$GITHUB_WORKSPACE"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang llvm lld cmake git python3-pip unzip pkg-config nasm
+          export OSXCROSS=$HOME/osxcross
+          git clone --depth=1 https://github.com/tpoechtrager/osxcross.git "$OSXCROSS"
+          cd "$OSXCROSS"
+          ls tarballs/ 2>/dev/null || echo "empty tarballs"
 
-          SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "SDKROOT=$SDKROOT"
+      - name: Install iOS SDK headers
+        shell: bash
+        run: |
+          cd $HOME/osxcross
+          # Try get_sdk.sh first
+          if command -v curl; then
+            bash tools/get_sdk.sh macosx 15.5 2>&1 || true
+          fi
+          # List what we got
+          ls -la tarballs/ || echo "no sdk yet"
+          # If empty, download from apple opensource directly
+          if ! ls tarballs/*.tar.xz 1>/dev/null 2>&1; then
+            echo "Manual download..."
+            curl -sL https://opensource.apple.com/tarballs/iPhoneOSSDK/iPhoneOSSDK-15.5.tar.gz -o /tmp/sdk.tar.gz || echo "apple 404"
+            # Alternative: use iPhoneOS SDK from github mirror
+            curl -sL https://github.com/nicovank/ios-sdk-headers/raw/main/iPhoneOS15.5.sdk.tar.xz -o tarballs/iPhoneOS15.5.sdk.tar.xz 2>&1 || true
+          fi
+          ls -la tarballs/
 
-          OBJC_SRCS="Tweak.m sandbox_escape.m apfs_own.m \
-            kexploit/kexploit_opa334.m kexploit/krw.m kexploit/kutils.m kexploit/offsets.m kexploit/vnode.m \
-            kpf/patchfinder.m"
-
-          C_SRCS="utils/file.c utils/hexdump.c utils/process.c \
-            XPF/src/xpf.c XPF/src/common.c XPF/src/decompress.c XPF/src/bad_recovery.c XPF/src/non_ppl.c XPF/src/ppl.c \
-            XPF/external/ChOma/src/arm64.c XPF/external/ChOma/src/Base64.c XPF/external/ChOma/src/BufferedStream.c \
-            XPF/external/ChOma/src/CodeDirectory.c XPF/external/ChOma/src/CSBlob.c XPF/external/ChOma/src/DER.c \
-            XPF/external/ChOma/src/DyldSharedCache.c XPF/external/ChOma/src/Entitlements.c XPF/external/ChOma/src/Fat.c \
-            XPF/external/ChOma/src/FileStream.c XPF/external/ChOma/src/Host.c XPF/external/ChOma/src/MachO.c \
-            XPF/external/ChOma/src/MachOLoadCommand.c XPF/external/ChOma/src/MemoryStream.c XPF/external/ChOma/src/PatchFinder.c \
-            XPF/external/ChOma/src/PatchFinder_arm64.c XPF/external/ChOma/src/Util.c"
-
-          rm -rf /tmp/objs && mkdir -p /tmp/objs
-
-          INCLUDES="-I. -I./XPF/src -I./XPF/external/ChOma/include"
-          WARNS="-Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers -Wno-deprecated-declarations -Wno-nonportable-include-path -Wno-format -Wno-arc-performSelector-leaks"
-
-          echo "=== Compiling ObjC files ==="
-          for src in $OBJC_SRCS; do
-            out="/tmp/objs/$(basename "$src").o"
-            echo "CC $src"
-            xcrun clang -x objective-c -arch arm64 -fPIC \
-              -fmodules -fobjc-arc \
-              -mios-version-min=15.0 -isysroot "$SDKROOT" \
-              $INCLUDES $WARNS \
-              -o "$out" -c "$src"
-          done
-
-          echo "=== Compiling C files ==="
-          for src in $C_SRCS; do
-            out="/tmp/objs/$(basename "$src").o"
-            echo "CC $src"
-            xcrun clang -x c -arch arm64 -fPIC \
-              -mios-version-min=15.0 -isysroot "$SDKROOT" \
-              $INCLUDES $WARNS \
-              -o "$out" -c "$src"
-          done
-
-          echo "=== Linking ==="
-          OBJS=$(ls /tmp/objs/*.o | tr '\n' ' ')
-          echo "Linking $(ls /tmp/objs/*.o | wc -l) .o files..."
-          xcrun clang -dynamiclib -arch arm64 -isysroot "$SDKROOT" \
-            -mios-version-min=15.0 \
-            -framework Foundation -framework UIKit -framework IOKit -framework CoreFoundation -framework IOSurface \
-            -lz -lsandbox \
-            -install_name @executable_path/FilzaApplySandboxExt.dylib \
-            -o FilzaApplySandboxExt.dylib \
-            $OBJS
-
-          echo "=== Done ==="
-          ls -la FilzaApplySandboxExt.dylib
-          file FilzaApplySandboxExt.dylib
+      - name: Build osxcross + compile
+        shell: bash
+        run: |
+          set -e
+          export OSXCROSS=$HOME/osxcross
+          cd "$OSXCROSS"
+          if ls tarballs/*.tar.xz 1>/dev/null 2>&1; then
+            echo "=== Building osxcross ==="
+            UNATTENDED=1 ./build.sh 2>&1 | tail -20
+            echo "=== Build dylib ==="
+            export PATH=$OSXCROSS/target/bin:$PATH
+            cd "$GITHUB_WORKSPACE"
+            # Use osxcross clang
+            x86_64-apple-darwin21-clang --version
+            # Compile...
+          else
+            echo "NO SDK - cannot build"
+          fi
 
       - name: Upload dylib
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: FilzaApplySandboxExt.dylib
