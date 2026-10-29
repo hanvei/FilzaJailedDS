@@ -636,6 +636,31 @@ static void manual_cb_fix(const char *path, int is_dir __attribute__((unused)), 
     }
 }
 
+
+// --- Manual recursive dir walk: fix parent first, then descend ---
+static void manual_walk(const char *path, int depth, int *fixed, int *fail) {
+    if (depth > 32) return;
+    manual_cb_fix(path, 0, fixed, fail);
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        NSLog(@"[Tweak]   lstat failed: %s errno=%d", path, errno);
+        return;
+    }
+    if (!S_ISDIR(st.st_mode)) return;
+    DIR *d = opendir(path);
+    if (!d) {
+        NSLog(@"[Tweak]   opendir failed: %s errno=%d (%s)", path, errno, strerror(errno));
+        return;
+    }
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        char child[1024];
+        snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
+        manual_walk(child, depth + 1, fixed, fail);
+    }
+    closedir(d);
+}
 static void runExploit(void) {
     NSLog(@"[Tweak] Running kexploit...");
     int kret = kexploit_opa334();
@@ -674,39 +699,6 @@ static void runExploit(void) {
     NSLog(@"[Tweak] === MANUAL RECURSIVE KERNEL FIX ===");
     int fixed_count = 0;
     int fail_count = 0;
-
-    typedef void (*walk_cb)(const char *path, int is_dir, int *fixed, int *fail);
-
-    // Helper inline block would be nicer but C + objc++ complicates it;
-    // use a simple static call instead — forward declare.
-    extern void manual_cb_fix(const char *path, int is_dir, int *fixed, int *fail);
-
-    void manual_walk(const char *path, int depth, int *fixed, int *fail) {
-        if (depth > 32) return;
-        // Fix THIS entry first (before recursing, so parent is owned by us when we descend)
-        manual_cb_fix(path, 0, fixed, fail);
-
-        struct stat st;
-        if (lstat(path, &st) != 0) {
-            NSLog(@"[Tweak]   lstat failed: %s errno=%d", path, errno);
-            return;
-        }
-        if (!S_ISDIR(st.st_mode)) return;
-
-        DIR *d = opendir(path);
-        if (!d) {
-            NSLog(@"[Tweak]   opendir failed: %s errno=%d (%s)", path, errno, strerror(errno));
-            return;
-        }
-        struct dirent *e;
-        while ((e = readdir(d)) != NULL) {
-            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
-            char child[1024];
-            snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
-            manual_walk(child, depth + 1, fixed, fail);
-        }
-        closedir(d);
-    }
 
     manual_walk("/var/mobile/Library/Carrier Bundles", 0, &fixed_count, &fail_count);
     NSLog(@"[Tweak] === MANUAL WALK DONE: fixed=%d failed=%d ===", fixed_count, fail_count);
