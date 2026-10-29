@@ -1,4 +1,4 @@
-@import UIKit;
+﻿@import UIKit;
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <xpc/xpc.h>
@@ -621,6 +621,8 @@ static void runExploit(void) {
     uint64_t self_proc_addr = proc_self();
     int sret = sandbox_escape(self_proc_addr);
     NSLog(@"[Tweak] sandbox_escape returned %d", sret);
+    int eret = sandbox_elevate_to_root(self_proc_addr);
+    NSLog(@"[Tweak] sandbox_elevate_to_root returned %d", eret);
 
     // For root-owned paths that fail DAC, use apfs_own(path, 501, 501) to
     // flip on-disk ownership to mobile before opening. Example:
