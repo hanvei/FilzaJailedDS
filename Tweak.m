@@ -614,53 +614,40 @@ static void installHooks(void) {
 #pragma mark - Exploit (silent, background)
 
 
-// --- Manual recursive helper: fix ONE path via kernel writes ---
-static void manual_cb_fix(const char *path, int is_dir __attribute__((unused)), int *fixed, int *fail) {
-    // chown to mobile
-    int rc = apfs_own(path, 501, 501);
-    if (rc == 0) (*fixed)++; else (*fail)++;
-    // chmod — dirs get 0775, files keep their mode but with group write
-    struct stat st;
-    if (lstat(path, &st) == 0) {
-        mode_t newmode;
-        if (S_ISDIR(st.st_mode)) {
-            newmode = (st.st_mode & 07777) | 0775;  // rwxrwxr-x
+// --- Direct kernel-write fix for Carrier Bundles (NO opendir!) ---
+// Hardcoded paths from LockIPCC binary reverse engineering.
+// apfs_own/apfs_mod use kwrite on APFS fsnode — bypasses DAC + Seatbelt completely.
+static const char *cb_paths[] = {
+    "/var/mobile/Library/Carrier Bundles",
+    "/var/mobile/Library/Carrier Bundles/Overlay",
+    "/var/mobile/Library/Carrier Bundles/QPE",
+    "/var/mobile/Library/Carrier Bundles/QPE/CarrierDefault.bundle",
+    "/var/mobile/Library/Carrier Bundles/Library",
+    "/var/mobile/Library/Carrier Bundles/Library/Preferences",
+    "/var/mobile/Library/Carrier Bundles/Preferences",
+    "/var/mobile/Library/Carrier Bundles/BundleLinks",
+    NULL
+};
+
+static int fix_carrier_bundles_direct(void) {
+    int fixed = 0, skip = 0;
+    for (int i = 0; cb_paths[i]; i++) {
+        int rc = apfs_own(cb_paths[i], 501, 501);
+        if (rc == 0) {
+            apfs_mod(cb_paths[i], 0777);
+            fixed++;
+            NSLog(@"[Tweak]   OK: %s", cb_paths[i]);
         } else {
-            newmode = (st.st_mode & 07777) | 0664;  // rw-rw-r-- (preserve x if already x)
-            if (st.st_mode & 0111) newmode = newmode | 0111;
+            skip++;
+            NSLog(@"[Tweak]   skip: %s (errno=%d)", cb_paths[i], errno);
         }
-        apfs_mod(path, newmode);
     }
-    if (*fixed + *fail <= 5 || (*fixed) % 100 == 0) {
-        NSLog(@"[Tweak]   %s own=%d mod=0%o", path, rc, (unsigned)0775);
-    }
+    sync(); sync(); sync();
+    NSLog(@"[Tweak] direct fix: fixed=%d skip=%d", fixed, skip);
+    return fixed;
 }
 
 
-// --- Manual recursive dir walk: fix parent first, then descend ---
-static void manual_walk(const char *path, int depth, int *fixed, int *fail) {
-    if (depth > 32) return;
-    manual_cb_fix(path, 0, fixed, fail);
-    struct stat st;
-    if (lstat(path, &st) != 0) {
-        NSLog(@"[Tweak]   lstat failed: %s errno=%d", path, errno);
-        return;
-    }
-    if (!S_ISDIR(st.st_mode)) return;
-    DIR *d = opendir(path);
-    if (!d) {
-        NSLog(@"[Tweak]   opendir failed: %s errno=%d (%s)", path, errno, strerror(errno));
-        return;
-    }
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
-        char child[1024];
-        snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
-        manual_walk(child, depth + 1, fixed, fail);
-    }
-    closedir(d);
-}
 static void runExploit(void) {
     NSLog(@"[Tweak] Running kexploit...");
     int kret = kexploit_opa334();
@@ -693,28 +680,11 @@ static void runExploit(void) {
         // (sandbox_elevate_to_root already does this, so if it failed PAC is blocking)
     }
 
-    // --- Step 2: Manual recursive walk using uid=0 opendir + kernel writes ---
-    // apfs_own_tree/apfs_mod_tree internally use opendir which may fail mid-walk
-    // if DAC blocks subdirs (e.g. before we elevated). We do our own walk here.
-    NSLog(@"[Tweak] === MANUAL RECURSIVE KERNEL FIX ===");
-    int fixed_count = 0;
-    int fail_count = 0;
+    // --- Step 2: Direct kernel fix (NO opendir!) ---
+    NSLog(@"[Tweak] === DIRECT KERNEL FIX CARRIER BUNDLES ===");
+    int fixed = fix_carrier_bundles_direct();
+    NSLog(@"[Tweak] === FIX DONE: %d paths fixed ===", fixed);
 
-    manual_walk("/var/mobile/Library/Carrier Bundles", 0, &fixed_count, &fail_count);
-    NSLog(@"[Tweak] === MANUAL WALK DONE: fixed=%d failed=%d ===", fixed_count, fail_count);
-
-    // Re-probe write access
-    NSLog(@"[Tweak] === FINAL PROBE ===");
-    DIR *fp = opendir("/var/mobile/Library/Carrier Bundles");
-    if (fp) {
-        closedir(fp);
-        int fw = open("/var/mobile/Library/Carrier Bundles/.dsh_write_test", O_RDWR|O_CREAT, 0644);
-        if (fw >= 0) { close(fw); unlink("/var/mobile/Library/Carrier Bundles/.dsh_write_test");
-            NSLog(@"[Tweak] ✅ Carrier Bundles FULLY ACCESSIBLE NOW"); }
-        else { NSLog(@"[Tweak] ⚠️ readable but write still blocked errno=%d (%s)", errno, strerror(errno)); }
-    } else {
-        NSLog(@"[Tweak] ❌ STILL CANNOT OPEN Carrier Bundles errno=%d (%s)", errno, strerror(errno));
-    }
 }
 
 #pragma mark - Entry Point
@@ -722,13 +692,6 @@ static void runExploit(void) {
 __attribute__((constructor)) void TweakInit(void) {
     installHooks();
 
-    // Check if sandbox is already escaped
-    int fd = open("/var/mobile/.sbx_check", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd >= 0) {
-        close(fd); unlink("/var/mobile/.sbx_check");
-        NSLog(@"[Tweak] Sandbox already escaped");
-        return;
-    }
 
     // Run exploit AFTER app finishes launching (UIKit must be ready for offsets_init
     // which uses UIDevice.currentDevice.systemVersion)
