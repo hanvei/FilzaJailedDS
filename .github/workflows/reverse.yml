@@ -9,48 +9,63 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify binary + ObjC metadata
+      - name: Extract arm64e slice + analyze
         shell: bash
         run: |
           BIN="LockIPCC_analysis/extracted/Payload/LockIPCC.app/LockIPCC"
-          if [ ! -f "$BIN" ]; then echo "NOT FOUND: $BIN"; ls -la LockIPCC_analysis/; exit 1; fi
-          file "$BIN"
-          ls -la "$BIN"
+          # Show FAT info
+          echo "=== FAT slices ==="
+          xcrun otool -f "$BIN"
           
-          # otool -o shows all ObjC classes + methods with IMP addresses
-          xcrun otool -o "$BIN" > /tmp/objc_all.txt 2>&1
-          echo "=== ObjC metadata ==="
-          head -300 /tmp/objc_all.txt
+          # arm64e slice offset 0x88000, size ~0x88910
+          # Extract arm64e slice
+          dd if="$BIN" of=/tmp/arm64e.bin bs=1 skip=$((0x88000)) count=$((0x88910)) 2>/dev/null
+          file /tmp/arm64e.bin
+          
+          # Analyze arm64e slice with otool (doesn't auto-strip PAC for IMPs)
           echo ""
-          echo "=== Activation methods ==="
-          grep -inE "activat|machinecode|carrier.*suffix|bootstrap|lockcarrier|keychain|fileport|persist|isactiv|global.*tapped" /tmp/objc_all.txt || echo "NONE FOUND"
+          echo "=== otool -o on arm64e slice ==="
+          xcrun otool -o /tmp/arm64e.bin > /tmp/objc_arm64e.txt 2>&1
+          head -200 /tmp/objc_arm64e.txt
+          
+          # Also analyze full binary but explicitly targeting arm64e
+          echo ""
+          echo "=== arm64 slice ObjC ==="
+          xcrun otool -arch arm64 -o "$BIN" > /tmp/objc_arm64.txt 2>&1
+          head -100 /tmp/objc_arm64.txt
+          
+          echo ""
+          echo "=== arm64e slice ObjC ==="
+          xcrun otool -arch arm64e -o "$BIN" > /tmp/objc_arm64e_full.txt 2>&1
+          head -100 /tmp/objc_arm64e_full.txt
+          
+          echo ""
+          echo "=== Activation methods in arm64e ==="
+          grep -inE "activat|machinecode|carrier|bootstrap|lockcarrier|keychain|fileport|persist|isactiv|global.*tapped|copyMachine" /tmp/objc_arm64e_full.txt || echo "NONE FOUND"
+          
+          echo ""
+          echo "=== All classes in arm64e ==="
+          grep -E "^		Class|^Class name" /tmp/objc_arm64e_full.txt | head -30
 
       - name: Full disasm
         shell: bash
         run: |
           BIN="LockIPCC_analysis/extracted/Payload/LockIPCC.app/LockIPCC"
-          xcrun llvm-objdump -d -m "$BIN" > /tmp/full_disasm.txt 2>&1 || true
-          echo "Lines: $(wc -l < /tmp/full_disasm.txt)"
           
-          # Grab sections around our target functions
+          # Disassemble arm64e slice specifically
+          xcrun llvm-objdump --arch=arm64e -d -m "$BIN" > /tmp/full_disasm_arm64e.txt 2>&1 || true
+          echo "arm64e disasm lines: $(wc -l < /tmp/full_disasm_arm64e.txt)"
+          
+          xcrun llvm-objdump --arch=arm64 -d -m "$BIN" > /tmp/full_disasm_arm64.txt 2>&1 || true
+          echo "arm64 disasm lines: $(wc -l < /tmp/full_disasm_arm64.txt)"
+          
           echo ""
-          echo "=== calculateCorrectActivateCode in disasm ==="
-          grep -A 80 "calculateCorrectActivateCode" /tmp/full_disasm.txt | head -100
+          echo "=== grep activation in arm64e disasm ==="
+          grep -inE "activat|machinecode|carrier|bootstrap|lockcarrier|keychain|fileport|persist|isactiv|copyMachine" /tmp/full_disasm_arm64e.txt | head -20 || echo "NONE"
+          
           echo ""
-          echo "=== getFixedMachineCode in disasm ==="
-          grep -A 80 "getFixedMachineCode" /tmp/full_disasm.txt | head -100
-          echo ""
-          echo "=== getCorrectActivateCode in disasm ==="
-          grep -A 60 "getCorrectActivateCode" /tmp/full_disasm.txt | head -80
-          echo ""
-          echo "=== copyMachineCode in disasm ==="
-          grep -A 60 "copyMachineCode" /tmp/full_disasm.txt | head -80
-          echo ""
-          echo "=== bootstrap_register in disasm ==="
-          grep -A 40 "bootstrap_register" /tmp/full_disasm.txt | head -60
-          echo ""
-          echo "=== fileport_makeport / fileport_makefd ==="
-          grep -A 40 -B 5 "fileport" /tmp/full_disasm.txt | head -80
+          echo "=== grep activation in arm64 disasm ==="
+          grep -inE "activat|machinecode|carrier|bootstrap|lockcarrier|keychain|fileport|persist|isactiv|copyMachine" /tmp/full_disasm_arm64.txt | head -20 || echo "NONE"
 
       - name: otool verbose
         shell: bash
