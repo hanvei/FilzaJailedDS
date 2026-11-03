@@ -1,56 +1,82 @@
-﻿name: Reverse-Engineer LockIPCC Registration
+﻿name: Simple LockIPCC Reversing
 
 on:
   workflow_dispatch:
 
 jobs:
-  reverse:
+  rev:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
-      - name: Dump Full Disassembly with Xcode llvm-objdump
+      - name: List ObjC methods with selectors
         shell: bash
         run: |
-          xcrun --find llvm-objdump
-          xcrun llvm-objdump -d -m --macho lockipcc_arm64e.macho > full_disasm.txt 2>&1
-          ls -la full_disasm.txt
-          wc -l full_disasm.txt
+          # arm64 slice is at offset 0x4000 in FAT file
+          # Use tail + dd to extract, or just use otool directly which handles FAT
+          xcrun otool -o lockipcc_arm64e.macho 2>&1 | head -5 || true
+          
+          # Actually let's try directly on the FAT binary
+          # First try otool -V to see version
+          xcrun otool -V 2>&1
+          
+          # Extract arm64 slice
+          dd if=lockipcc_arm64e.macho bs=1 skip=0 count=4 2>&1 | hexdump -C
+          
+          # Check what we have
+          file lockipcc_arm64e.macho 2>&1 || true
+          ls -la lockipcc_arm64e.macho
 
-      - name: Extract key functions
+      - name: Use Xcode objdump
         shell: bash
         run: |
-          python3 << 'PYEOF' > key_funcs.txt 2>&1
-          import re
-          with open('full_disasm.txt') as f:
-              data = f.read()
-          print(f'Total lines: {len(data.splitlines())}')
-          functions = ['calculateCorrectActivateCode', 'getFixedMachineCode',
-                      'getCarrierCodeSuffix', 'getCorrectActivateCode',
-                      'copyMachineCode', 'isActivated', 'bootstrap_register',
-                      'globalLockCarrierTapped', 'keychainGetObjectForKey',
-                      'keychainSetObject', 'setActivated']
-          for fn in functions:
-              pattern = re.compile(rf'^{fn}>$', re.MULTILINE)
-              matches = list(pattern.finditer(data))
-              if matches:
-                  print(f'\n{"="*60}')
-                  print(f'=== {fn}: {len(matches)} matches ===')
-                  print('='*60)
-                  for m in matches:
-                      start = m.start()
-                      next_fn = re.search(r'\n\n[^ \n]+>:', data[m.end():])
-                      end = m.end() + next_fn.start() if next_fn else len(data)
-                      block = data[start:end]
-                      if len(block) > 3000:
-                          block = block[:3000] + '\n...(TRUNCATED)'
-                      print(block)
-          PYEOF
-          ls -la key_funcs.txt
+          # Try xcrun llvm-objdump on the arm64 slice (it's already a standalone MachO)
+          xcrun llvm-objdump -d -m --macho lockipcc_arm64e.macho > full_disasm.txt 2>&1 || true
+          wc -l full_disasm.txt
+          
+          # Also try otool -d 
+          xcrun otool -d lockipcc_arm64e.macho > otool_disasm.txt 2>&1 || true
+          wc -l otool_disasm.txt
+          
+          # Get ObjC class/method list
+          xcrun otool -O lockipcc_arm64e.macho > objc_methods.txt 2>&1 || true
+          wc -l objc_methods.txt
+          head -100 objc_methods.txt
+
+      - name: Find activation functions in disasm
+        shell: bash
+        run: |
+          echo "=== ALL references to calculateCorrectActivateCode ==="
+          grep -n "calculateCorrectActivateCode" full_disasm.txt | head -30 || true
+          
+          echo ""
+          echo "=== ALL references to getFixedMachineCode ==="
+          grep -n "getFixedMachineCode" full_disasm.txt | head -30 || true
+          
+          echo ""
+          echo "=== ALL references to copyMachineCode ==="
+          grep -n "copyMachineCode" full_disasm.txt | head -30 || true
+          
+          echo ""
+          echo "=== ALL references to bootstrap_register ==="
+          grep -n "bootstrap_register" full_disasm.txt | head -30 || true
+          
+          echo ""
+          echo "=== ALL references to isActivated ==="
+          grep -n "isActivated" full_disasm.txt | head -30 || true
+          
+          echo ""
+          echo "=== ALL references to keychain ==="
+          grep -n "keychain" full_disasm.txt | head -30 || true
+          
+          echo ""
+          echo "=== ALL references to fileport ==="
+          grep -n "fileport" full_disasm.txt | head -30 || true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: lockipcc_reverse_v2
+          name: lockipcc_rev2
           path: |
             full_disasm.txt
-            key_funcs.txt
+            otool_disasm.txt
+            objc_methods.txt
