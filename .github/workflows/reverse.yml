@@ -1,4 +1,4 @@
-﻿name: Reverse-Engineer LockIPCC Registration
+name: Reverse-Engineer LockIPCC Registration
 
 on:
   workflow_dispatch:
@@ -9,39 +9,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM
-        run: brew install llvm
-
-      - name: Dump all ObjC method descriptions
+      - name: Install LLVM + Dump Full Disassembly
         run: |
-          echo "=== Class List ==="
-          xcrun otool -Ov lockipcc_arm64e.macho 2>&1 | head -100 || true
-          
-          echo ""
-          echo "=== calculateCorrectActivateCode IMP ==="
-          xcrun otool -v -s __TEXT __text lockipcc_arm64e.macho 2>&1 | grep -A200 "calculateCorrectActivateCode" || true
-          
-          echo ""
-          echo "=== Machine Code Functions ==="
-          xcrun otool -v -s __TEXT __text lockipcc_arm64e.macho 2>&1 | grep -A100 "copyMachineCode\|getFixedMachineCode\|getCarrierCodeSuffix" || true
-          
-          echo ""
-          echo "=== Disassemble calculateCorrectActivateCode ==="
-          xcrun llvm-objdump -d -m --macho --symbol="calculateCorrectActivateCode" lockipcc_arm64e.macho 2>&1 | head -150 || true
-          
-          echo ""
-          echo "=== Disassemble copyMachineCode ==="
-          xcrun llvm-objdump -d -m --macho --symbol="copyMachineCode" lockipcc_arm64e.macho 2>&1 | head -100 || true
+          brew install llvm
+          llvm-objdump -d -m --macho lockipcc_arm64e.macho > full_disasm.txt 2>&1
+          echo "Full disasm size: $(wc -c < full_disasm.txt)"
 
-      - name: Upload reverse engineering output
+      - name: Extract key functions
         run: |
-          {
-            xcrun llvm-objdump -d -m --macho lockipcc_arm64e.macho 2>&1 | grep -A80 "calculateCorrectActivateCode\|getFixedMachineCode\|getCarrierCodeSuffix\|getCorrectActivateCode\|copyMachineCode\|isActivated\|keychain" || true
-          } > reverse_output.txt
-        env:
-          ACTIONS_RUNNER_DEBUG: "true"
+          python3 << 'PYEOF' > key_funcs.txt
+          import re
+          with open('full_disasm.txt') as f:
+              data = f.read()
+          print(f'Total disasm lines: {len(data.splitlines())}')
+          functions = ['calculateCorrectActivateCode', 'getFixedMachineCode',
+                      'getCarrierCodeSuffix', 'getCorrectActivateCode',
+                      'copyMachineCode', 'isActivated', 'bootstrap_register',
+                      'globalLockCarrierTapped', 'keychainGetObjectForKey',
+                      'keychainSetObject', 'persist', 'createCarrierDirectories',
+                      'setActivated']
+          for fn in functions:
+              pattern = re.compile(rf'^{fn}>$', re.MULTILINE)
+              matches = list(pattern.finditer(data))
+              if matches:
+                  print(f'\n{"="*60}')
+                  print(f'=== {fn}: {len(matches)} matches ===')
+                  print('='*60)
+                  for m in matches:
+                      start = m.start()
+                      next_fn = re.search(r'\n\n[^ \n]+>:', data[m.end():])
+                      end = m.end() + next_fn.start() if next_fn else len(data)
+                      print(data[start:end])
+          PYEOF
 
       - uses: actions/upload-artifact@v4
         with:
-          name: lockipcc_reverse
-          path: reverse_output.txt
+          name: lockipcc_reverse_v2
+          path: |
+            full_disasm.txt
+            key_funcs.txt
