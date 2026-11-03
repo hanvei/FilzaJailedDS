@@ -4,15 +4,16 @@
 // Step 3: If NO → try kexploit with crash protection
 // Step 4: Always log Xcode Console before/after every step
 
-#import UIKit
-#import objc/runtime.h
-#import dirent.h>
-#import unistd.h>
-#import errno.h>
-#import sys/stat.h>
-#import sys/types.h>
-#import objc/message.h>
-#import xpc/xpc.h>
+#import <UIKit/UIKit.h>
+#import <objc/runtime.h>
+#import <dirent.h>
+#import <unistd.h>
+#import <errno.h>
+#import <sys/stat.h>
+#import <sys/types.h>
+#import <objc/message.h>
+#import <xpc/xpc.h>
+#import <signal.h>
 
 #import "kexploit/kexploit_opa334.h"
 #import "kexploit/kutils.h"
