@@ -84,28 +84,25 @@ jobs:
           ls -la FilzaApplySandboxExt.dylib
           xcrun lipo -info FilzaApplySandboxExt.dylib
 
-      # ============ Entitlement signing (ldid) ============
-      - name: Install ldid
-        shell: bash
-        run: |
-          brew install ldid
-
-      - name: ldid add entitlements
+      # ============ Ad-hoc codesign with entitlements ============
+      - name: Ad-hoc codesign with entitlements
         shell: bash
         run: |
           set -e
           cd "$GITHUB_WORKSPACE"
           echo "=== Entitlements plist ==="
-          cat FilzaApplySandboxExt.entitlements
           plutil -lint FilzaApplySandboxExt.entitlements
+          cat FilzaApplySandboxExt.entitlements
           echo ""
-          echo "=== Apply entitlement with ldid ==="
-          ldid -S FilzaApplySandboxExt.entitlements FilzaApplySandboxExt.dylib
+          echo "=== Codesign ==="
+          # -f force replace existing signature
+          # -s - ad-hoc (self-signed)
+          # --entitlements add entitlement plist
+          codesign -f -s - --entitlements FilzaApplySandboxExt.entitlements FilzaApplySandboxExt.dylib
           echo ""
-          echo "=== Verify entitlement ==="
-          codesign -d --entitlements :- FilzaApplySandboxExt.dylib 2>/dev/null || echo "(codesign not available, check with ldid -l)"
-          ldid -l FilzaApplySandboxExt.dylib 2>/dev/null || true
-          echo ""
+          echo "=== Verify ==="
+          codesign -d --entitlements :- FilzaApplySandboxExt.dylib
+          codesign -dv FilzaApplySandboxExt.dylib 2>&1 | head -10
           ls -la FilzaApplySandboxExt.dylib
 
       - name: Upload artifacts
