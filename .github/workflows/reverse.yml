@@ -1,4 +1,4 @@
-name: Reverse-Engineer LockIPCC Registration
+﻿name: Reverse-Engineer LockIPCC Registration
 
 on:
   workflow_dispatch:
@@ -9,25 +9,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM + Dump Full Disassembly
+      - name: Dump Full Disassembly with Xcode llvm-objdump
+        shell: bash
         run: |
-          brew install llvm
-          llvm-objdump -d -m --macho lockipcc_arm64e.macho > full_disasm.txt 2>&1
-          echo "Full disasm size: $(wc -c < full_disasm.txt)"
+          xcrun --find llvm-objdump
+          xcrun llvm-objdump -d -m --macho lockipcc_arm64e.macho > full_disasm.txt 2>&1
+          ls -la full_disasm.txt
+          wc -l full_disasm.txt
 
       - name: Extract key functions
+        shell: bash
         run: |
-          python3 << 'PYEOF' > key_funcs.txt
+          python3 << 'PYEOF' > key_funcs.txt 2>&1
           import re
           with open('full_disasm.txt') as f:
               data = f.read()
-          print(f'Total disasm lines: {len(data.splitlines())}')
+          print(f'Total lines: {len(data.splitlines())}')
           functions = ['calculateCorrectActivateCode', 'getFixedMachineCode',
                       'getCarrierCodeSuffix', 'getCorrectActivateCode',
                       'copyMachineCode', 'isActivated', 'bootstrap_register',
                       'globalLockCarrierTapped', 'keychainGetObjectForKey',
-                      'keychainSetObject', 'persist', 'createCarrierDirectories',
-                      'setActivated']
+                      'keychainSetObject', 'setActivated']
           for fn in functions:
               pattern = re.compile(rf'^{fn}>$', re.MULTILINE)
               matches = list(pattern.finditer(data))
@@ -39,8 +41,12 @@ jobs:
                       start = m.start()
                       next_fn = re.search(r'\n\n[^ \n]+>:', data[m.end():])
                       end = m.end() + next_fn.start() if next_fn else len(data)
-                      print(data[start:end])
+                      block = data[start:end]
+                      if len(block) > 3000:
+                          block = block[:3000] + '\n...(TRUNCATED)'
+                      print(block)
           PYEOF
+          ls -la key_funcs.txt
 
       - uses: actions/upload-artifact@v4
         with:
