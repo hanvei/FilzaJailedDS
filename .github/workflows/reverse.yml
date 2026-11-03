@@ -1,0 +1,47 @@
+﻿name: Reverse-Engineer LockIPCC Registration
+
+on:
+  workflow_dispatch:
+
+jobs:
+  reverse:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM
+        run: brew install llvm
+
+      - name: Dump all ObjC method descriptions
+        run: |
+          echo "=== Class List ==="
+          xcrun otool -Ov lockipcc_arm64e.macho 2>&1 | head -100 || true
+          
+          echo ""
+          echo "=== calculateCorrectActivateCode IMP ==="
+          xcrun otool -v -s __TEXT __text lockipcc_arm64e.macho 2>&1 | grep -A200 "calculateCorrectActivateCode" || true
+          
+          echo ""
+          echo "=== Machine Code Functions ==="
+          xcrun otool -v -s __TEXT __text lockipcc_arm64e.macho 2>&1 | grep -A100 "copyMachineCode\|getFixedMachineCode\|getCarrierCodeSuffix" || true
+          
+          echo ""
+          echo "=== Disassemble calculateCorrectActivateCode ==="
+          xcrun llvm-objdump -d -m --macho --symbol="calculateCorrectActivateCode" lockipcc_arm64e.macho 2>&1 | head -150 || true
+          
+          echo ""
+          echo "=== Disassemble copyMachineCode ==="
+          xcrun llvm-objdump -d -m --macho --symbol="copyMachineCode" lockipcc_arm64e.macho 2>&1 | head -100 || true
+
+      - name: Upload reverse engineering output
+        run: |
+          {
+            xcrun llvm-objdump -d -m --macho lockipcc_arm64e.macho 2>&1 | grep -A80 "calculateCorrectActivateCode\|getFixedMachineCode\|getCarrierCodeSuffix\|getCorrectActivateCode\|copyMachineCode\|isActivated\|keychain" || true
+          } > reverse_output.txt
+        env:
+          ACTIONS_RUNNER_DEBUG: "true"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lockipcc_reverse
+          path: reverse_output.txt
