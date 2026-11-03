@@ -1,4 +1,4 @@
-﻿name: Simple LockIPCC Reversing
+name: LockIPCC Reverse Engineering
 
 on:
   workflow_dispatch:
@@ -9,74 +9,63 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: List ObjC methods with selectors
+      - name: Verify binary + ObjC metadata
         shell: bash
         run: |
-          # arm64 slice is at offset 0x4000 in FAT file
-          # Use tail + dd to extract, or just use otool directly which handles FAT
-          xcrun otool -o lockipcc_arm64e.macho 2>&1 | head -5 || true
+          BIN="LockIPCC_analysis/extracted/Payload/LockIPCC.app/LockIPCC"
+          if [ ! -f "$BIN" ]; then echo "NOT FOUND: $BIN"; ls -la LockIPCC_analysis/; exit 1; fi
+          file "$BIN"
+          ls -la "$BIN"
           
-          # Actually let's try directly on the FAT binary
-          # First try otool -V to see version
-          xcrun otool -V 2>&1
-          
-          # Extract arm64 slice
-          dd if=lockipcc_arm64e.macho bs=1 skip=0 count=4 2>&1 | hexdump -C
-          
-          # Check what we have
-          file lockipcc_arm64e.macho 2>&1 || true
-          ls -la lockipcc_arm64e.macho
+          # otool -o shows all ObjC classes + methods with IMP addresses
+          xcrun otool -o "$BIN" > /tmp/objc_all.txt 2>&1
+          echo "=== ObjC metadata ==="
+          head -300 /tmp/objc_all.txt
+          echo ""
+          echo "=== Activation methods ==="
+          grep -inE "activat|machinecode|carrier.*suffix|bootstrap|lockcarrier|keychain|fileport|persist|isactiv|global.*tapped" /tmp/objc_all.txt || echo "NONE FOUND"
 
-      - name: Use Xcode objdump
+      - name: Full disasm
         shell: bash
         run: |
-          # Try xcrun llvm-objdump on the arm64 slice (it's already a standalone MachO)
-          xcrun llvm-objdump -d -m --macho lockipcc_arm64e.macho > full_disasm.txt 2>&1 || true
-          wc -l full_disasm.txt
+          BIN="LockIPCC_analysis/extracted/Payload/LockIPCC.app/LockIPCC"
+          xcrun llvm-objdump -d -m "$BIN" > /tmp/full_disasm.txt 2>&1 || true
+          echo "Lines: $(wc -l < /tmp/full_disasm.txt)"
           
-          # Also try otool -d 
-          xcrun otool -d lockipcc_arm64e.macho > otool_disasm.txt 2>&1 || true
-          wc -l otool_disasm.txt
-          
-          # Get ObjC class/method list
-          xcrun otool -O lockipcc_arm64e.macho > objc_methods.txt 2>&1 || true
-          wc -l objc_methods.txt
-          head -100 objc_methods.txt
+          # Grab sections around our target functions
+          echo ""
+          echo "=== calculateCorrectActivateCode in disasm ==="
+          grep -A 80 "calculateCorrectActivateCode" /tmp/full_disasm.txt | head -100
+          echo ""
+          echo "=== getFixedMachineCode in disasm ==="
+          grep -A 80 "getFixedMachineCode" /tmp/full_disasm.txt | head -100
+          echo ""
+          echo "=== getCorrectActivateCode in disasm ==="
+          grep -A 60 "getCorrectActivateCode" /tmp/full_disasm.txt | head -80
+          echo ""
+          echo "=== copyMachineCode in disasm ==="
+          grep -A 60 "copyMachineCode" /tmp/full_disasm.txt | head -80
+          echo ""
+          echo "=== bootstrap_register in disasm ==="
+          grep -A 40 "bootstrap_register" /tmp/full_disasm.txt | head -60
+          echo ""
+          echo "=== fileport_makeport / fileport_makefd ==="
+          grep -A 40 -B 5 "fileport" /tmp/full_disasm.txt | head -80
 
-      - name: Find activation functions in disasm
+      - name: otool verbose
         shell: bash
         run: |
-          echo "=== ALL references to calculateCorrectActivateCode ==="
-          grep -n "calculateCorrectActivateCode" full_disasm.txt | head -30 || true
-          
-          echo ""
-          echo "=== ALL references to getFixedMachineCode ==="
-          grep -n "getFixedMachineCode" full_disasm.txt | head -30 || true
-          
-          echo ""
-          echo "=== ALL references to copyMachineCode ==="
-          grep -n "copyMachineCode" full_disasm.txt | head -30 || true
-          
-          echo ""
-          echo "=== ALL references to bootstrap_register ==="
-          grep -n "bootstrap_register" full_disasm.txt | head -30 || true
-          
-          echo ""
-          echo "=== ALL references to isActivated ==="
-          grep -n "isActivated" full_disasm.txt | head -30 || true
-          
-          echo ""
-          echo "=== ALL references to keychain ==="
-          grep -n "keychain" full_disasm.txt | head -30 || true
-          
-          echo ""
-          echo "=== ALL references to fileport ==="
-          grep -n "fileport" full_disasm.txt | head -30 || true
+          BIN="LockIPCC_analysis/extracted/Payload/LockIPCC.app/LockIPCC"
+          xcrun otool -V -l "$BIN" > /tmp/otool_sections.txt 2>&1
+          xcrun nm -m "$BIN" > /tmp/nm_all.txt 2>&1 || true
+          echo "=== nm grep activation ==="
+          grep -inE "activat|machine|bootstrap|fileport" /tmp/nm_all.txt || true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: lockipcc_rev2
+          name: lockipcc_rev
           path: |
-            full_disasm.txt
-            otool_disasm.txt
-            objc_methods.txt
+            /tmp/objc_all.txt
+            /tmp/full_disasm.txt
+            /tmp/otool_sections.txt
+            /tmp/nm_all.txt
