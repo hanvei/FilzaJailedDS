@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 进程获得 root 身份 (uid=0) -->
+    <key>com.apple.security.root</key>
+    <true/>
+    <!-- 完全禁用 sandbox - 绕过 Seatbelt profile -->
+    <key>com.apple.private.security.no-sandbox</key>
+    <true/>
+    <!-- 允许任何网络访问 -->
+    <key>com.apple.security.allow-insecure-networking</key>
+    <true/>
+    <!-- 允许文件读写 -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <!-- 动态注入权限 -->
+    <key>com.apple.developer.security.derived-execution-info</key>
+    <true/>
+</dict>
+</plist>

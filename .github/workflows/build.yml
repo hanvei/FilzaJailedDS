@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     runs-on: macos-14
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -53,7 +53,7 @@ jobs:
                 -fmodules -fobjc-arc \
                 -mios-version-min=15.0 -isysroot "$SDKROOT" \
                 $INCLUDES $WARNS \
-                -o "$out" -c "$src" 2>&1 | tail -3 || { echo "FAIL: $src"; exit 1; }
+                -o "$out" -c "$src" 2>&1 | tee /tmp/cc_${src//\//_}.err; if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "FAIL: $src"; exit 1; fi
             done
 
             echo "--- C ---"
@@ -62,7 +62,7 @@ jobs:
               xcrun clang -x c -arch $ARCH -fPIC \
                 -mios-version-min=15.0 -isysroot "$SDKROOT" \
                 $INCLUDES $WARNS \
-                -o "$out" -c "$src" 2>&1 | tail -3 || { echo "FAIL: $src"; exit 1; }
+                -o "$out" -c "$src" 2>&1 | tee /tmp/cc_${src//\//_}.err; if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "FAIL: $src"; exit 1; fi
             done
 
             echo "--- Linking $ARCH ---"
@@ -73,7 +73,7 @@ jobs:
               -lz -lsandbox -lcompression \
               -install_name @executable_path/FilzaApplySandboxExt.dylib \
               -o /tmp/FilzaApplySandboxExt_$ARCH.dylib \
-              $OBJS 2>&1 | tail -3 || { echo "LINK FAIL $ARCH"; exit 1; }
+              $OBJS 2>&1 | tee /tmp/link_$ARCH.err; if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "LINK FAIL $ARCH"; exit 1; fi
 
             ls -la /tmp/FilzaApplySandboxExt_$ARCH.dylib
           done
@@ -87,8 +87,56 @@ jobs:
           xcrun lipo -info FilzaApplySandboxExt.dylib
           xcrun otool -L FilzaApplySandboxExt.dylib | head -10
 
-      - name: Upload dylib
+      # ============ CoreTrust Bypass: entitlements + ChOma ct_bypass ============
+      - name: Install OpenSSL + ldid
+        shell: bash
+        run: |
+          set -e
+          brew install openssl@3 ldid
+          export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:$PKG_CONFIG_PATH"
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "OpenSSL: $(brew --prefix openssl@3)"
+
+      - name: Build ChOma ct_bypass (macOS native)
+        shell: bash
+        run: |
+          set -e
+          git clone https://github.com/opa334/ChOma.git /tmp/ChOma --depth 1
+          cd /tmp/ChOma
+          export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:$PKG_CONFIG_PATH"
+          make DISABLE_TESTS=0 2>&1 | tail -30
+          echo "--- ct_bypass binary ---"
+          ls -la output/tests/ct_bypass
+          file output/tests/ct_bypass
+
+      - name: ldid add entitlements to dylib
+        shell: bash
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          plutil -lint FilzaApplySandboxExt.entitlements
+          ldid -S FilzaApplySandboxExt.entitlements FilzaApplySandboxExt.dylib
+          echo "=== After ldid ==="
+          ls -la FilzaApplySandboxExt.dylib
+          codesign -d --entitlements :- FilzaApplySandboxExt.dylib 2>/dev/null || echo "(codesign check skipped)"
+
+      - name: CoreTrust Bypass with ct_bypass
+        shell: bash
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          /tmp/ChOma/output/tests/ct_bypass \
+            -i FilzaApplySandboxExt.dylib \
+            -r \
+            -I com.filza.FilzaApplySandboxExt
+          echo "=== After ct_bypass ==="
+          ls -la FilzaApplySandboxExt.dylib
+          xcrun otool -l FilzaApplySandboxExt.dylib | grep -A2 LC_CODE_SIGNATURE | head -5 || true
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: FilzaApplySandboxExt.dylib
-          path: FilzaApplySandboxExt.dylib
+          name: FilzaApplySandboxExt-build
+          path: |
+            FilzaApplySandboxExt.dylib
+            FilzaApplySandboxExt.entitlements
