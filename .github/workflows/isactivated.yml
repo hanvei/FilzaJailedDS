@@ -1,0 +1,40 @@
+name: Find isActivated IMP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  find-imp:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@main
+
+      - name: Extract LockIPCC binary
+        run: |
+          # The binary is in the repo already
+          ls -la LockIPCC_analysis/extracted/Payload/LockIPCC.app/
+
+      - name: Find isActivated in selrefs
+        run: |
+          BIN="LockIPCC_analysis/extracted/Payload/LockIPCC.app/LockIPCC"
+          echo "=== arm64e slice: otool -s __DATA_CONST __objc_selrefs ==="
+          otool -arch arm64e -s __DATA_CONST __objc_selrefs "$BIN" | head -100
+          echo ""
+          echo "=== arm64e otool -s __TEXT __objc_methlist ==="
+          otool -arch arm64e -s __TEXT __objc_methlist "$BIN" | head -100
+          echo ""
+          echo "=== arm64e otool -s __TEXT __objc_methname | grep -i activat ==="
+          otool -arch arm64e -s __TEXT __objc_methname "$BIN" | grep -i -A2 -B2 activat || true
+          echo ""
+          echo "=== nm -nm for isActivated ==="
+          nm -nm "$BIN" | grep -i isactiv || true
+          echo ""
+          echo "=== otool -OV for all ObjC methods ==="
+          otool -arch arm64e -OV "$BIN" | grep -i -A3 -B3 'isActivated\|calculateCorrect\|getFixedMachine\|copyMachine' || true
+          echo ""
+          echo "=== Full otool -OV output (all methods with IMPs) ==="
+          otool -arch arm64e -OV "$BIN" | head -300
+
+      - name: Download patched file if needed
+        run: |
+          echo "IMP will be found above, then we can patch"
