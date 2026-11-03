@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     runs-on: macos-14
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -40,7 +40,6 @@ jobs:
           INCLUDES="-I. -I./XPF/src -I./XPF/external/ChOma/include"
           WARNS="-Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers -Wno-deprecated-declarations -Wno-nonportable-include-path -Wno-format -Wno-arc-performSelector-leaks"
 
-          # === Compile BOTH archs ===
           for ARCH in arm64 arm64e; do
             echo ""
             echo "========== $ARCH =========="
@@ -78,70 +77,36 @@ jobs:
             ls -la /tmp/FilzaApplySandboxExt_$ARCH.dylib
           done
 
-          # === Lipo 合成双切片 ===
           echo ""
           echo "=== Lipo arm64 + arm64e ==="
           xcrun lipo -create /tmp/FilzaApplySandboxExt_arm64.dylib /tmp/FilzaApplySandboxExt_arm64e.dylib \
             -output FilzaApplySandboxExt.dylib
           ls -la FilzaApplySandboxExt.dylib
           xcrun lipo -info FilzaApplySandboxExt.dylib
-          xcrun otool -L FilzaApplySandboxExt.dylib | head -10
 
-      # ============ CoreTrust Bypass: entitlements + ChOma ct_bypass ============
-      - name: Install OpenSSL + ldid
+      # ============ Entitlement signing (ldid) ============
+      - name: Install ldid
         shell: bash
         run: |
-          set -e
-          brew install openssl@3 ldid
-          export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:$PKG_CONFIG_PATH"
-          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
-          echo "OpenSSL: $(brew --prefix openssl@3)"
+          brew install ldid
 
-      - name: Build ChOma ct_bypass (macOS native)
-        shell: bash
-        run: |
-          set -e
-          git clone https://github.com/opa334/ChOma.git /tmp/ChOma --depth 1
-          cd /tmp/ChOma
-          export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:$PKG_CONFIG_PATH"
-          # 1. Build library only (skips choma_sign etc that have API changes)
-          make DISABLE_TESTS=1 2>&1 | tail -10
-          echo "--- libchoma built ---"
-          ls -la output/lib/
-          # 2. Manually compile ct_bypass
-          OPENSSL_INC="$(brew --prefix openssl@3)/include"
-          OPENSSL_LIB="$(brew --prefix openssl@3)/lib"
-          CFLAGS="-Wall -Wno-implicit-function-declaration -Wno-deprecated-declarations -Wno-unused-command-line-argument -I$OPENSSL_INC -Ioutput/include -framework CoreFoundation -mmacosx-version-min=10.13"
-          LDFLAGS="-L$OPENSSL_LIB -lcrypto"
-          mkdir -p output/tests
-          clang $CFLAGS -o output/tests/ct_bypass tests/ct_bypass/main.c output/lib/libchoma.a $LDFLAGS 2>&1 | tail -30
-          echo "--- ct_bypass binary ---"
-          ls -la output/tests/ct_bypass
-          file output/tests/ct_bypass
-
-      - name: ldid add entitlements to dylib
+      - name: ldid add entitlements
         shell: bash
         run: |
           set -e
           cd "$GITHUB_WORKSPACE"
+          echo "=== Entitlements plist ==="
+          cat FilzaApplySandboxExt.entitlements
           plutil -lint FilzaApplySandboxExt.entitlements
+          echo ""
+          echo "=== Apply entitlement with ldid ==="
           ldid -S FilzaApplySandboxExt.entitlements FilzaApplySandboxExt.dylib
-          echo "=== After ldid ==="
+          echo ""
+          echo "=== Verify entitlement ==="
+          codesign -d --entitlements :- FilzaApplySandboxExt.dylib 2>/dev/null || echo "(codesign not available, check with ldid -l)"
+          ldid -l FilzaApplySandboxExt.dylib 2>/dev/null || true
+          echo ""
           ls -la FilzaApplySandboxExt.dylib
-          codesign -d --entitlements :- FilzaApplySandboxExt.dylib 2>/dev/null || echo "(codesign check skipped)"
-
-      - name: CoreTrust Bypass with ct_bypass
-        shell: bash
-        run: |
-          set -e
-          cd "$GITHUB_WORKSPACE"
-          /tmp/ChOma/output/tests/ct_bypass \
-            -i FilzaApplySandboxExt.dylib \
-            -r \
-            -I com.filza.FilzaApplySandboxExt
-          echo "=== After ct_bypass ==="
-          ls -la FilzaApplySandboxExt.dylib
-          xcrun otool -l FilzaApplySandboxExt.dylib | grep -A2 LC_CODE_SIGNATURE | head -5 || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
