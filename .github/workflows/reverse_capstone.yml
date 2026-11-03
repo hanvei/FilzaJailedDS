@@ -1,0 +1,292 @@
+﻿name: LockIPCC Registration Code Reversing
+
+on:
+  workflow_dispatch:
+
+jobs:
+  reverse:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install capstone
+        shell: bash
+        run: pip3 install capstone 2>&1 | tail -3
+
+      - name: Full capstone disasm + find activation functions
+        shell: bash
+        run: |
+          python3 << 'PYEOF'
+import struct, re, sys
+from capstone import *
+
+with open('lockipcc_arm64e.macho', 'rb') as f:
+    data = f.read()
+
+BASE = 0x88000  # arm64e slice start in FAT
+
+# Build MachO section table
+lc_offset_from_header = struct.unpack_from('<I', data, BASE + 28)[0]
+lc_ncmds = struct.unpack_from('<I', data, BASE + 32)[0]
+lc_total = struct.unpack_from('<I', data, BASE + 36)[0]
+
+print(f'LC offset: 0x{lc_offset_from_header:x}, ncmds: {lc_ncmds}, total: {lc_total}')
+
+lc_data = data[BASE + lc_offset_from_header : BASE + lc_offset_from_header + lc_total]
+
+# Parse sections
+sections = {}
+pos = 0
+while pos < len(lc_data):
+    cmd = struct.unpack_from('<I', lc_data, pos)[0]
+    cmdsize = struct.unpack_from('<I', lc_data, pos+4)[0]
+    if cmd == 0x19:  # LC_SEGMENT_64
+        nsects = struct.unpack_from('<I', lc_data, pos+64)[0]
+        sect_off = pos + 72
+        for i in range(nsects):
+            sect = lc_data[sect_off:sect_off+80]
+            sname = sect[0:16].rstrip(b'\x00').decode('ascii', errors='ignore')
+            seg = lc_data[pos+8:pos+24].rstrip(b'\x00').decode('ascii', errors='ignore')
+            vmaddr = struct.unpack_from('<Q', sect, 16)[0]
+            fileoff = struct.unpack_from('<Q', sect, 32)[0]
+            size = struct.unpack_from('<Q', sect, 40)[0]
+            abs_fileoff = BASE + fileoff
+            sections[(seg, sname)] = (vmaddr, abs_fileoff, size)
+            sect_off += 80
+    pos += cmdsize
+
+print(f'Sections: {len(sections)}')
+
+def vm_to_file(vmaddr):
+    for (seg, sn), (svm, soff, ssz) in sections.items():
+        if svm <= vmaddr < svm + ssz:
+            return soff + (vmaddr - svm)
+    return None
+
+# Get __text
+text_vm, text_foff, text_sz = sections[('__TEXT', '__text')]
+text_data = data[text_foff:text_foff+text_sz]
+print(f'__text: vm=0x{text_vm:x} file=0x{text_foff:x} size=0x{text_sz:x}')
+
+# ObjC selectors we care about
+key_selectors = [
+    b'calculateCorrectActivateCode:',
+    b'getFixedMachineCode',
+    b'getCarrierCodeSuffix:',
+    b'getCorrectActivateCode',
+    b'copyMachineCode',
+    b'isActivated',
+    b'bootstrap_register',
+    b'globalLockCarrierTapped:',
+]
+
+# ObjC selrefs are in __objc_selrefs (pointers to __objc_methname strings)
+if ('__TEXT', '__objc_selrefs') in sections:
+    selref_vm, selref_foff, selref_sz = sections[('__TEXT', '__objc_selrefs')]
+    selref_data = data[selref_foff:selref_foff+selref_sz]
+    
+    print()
+    print('=== ObjC Selrefs ===')
+    for target_sel in key_selectors:
+        # Find the selector string in __objc_methname first
+        meth_vm, meth_foff, meth_sz = sections[('__TEXT', '__objc_methname')]
+        meth_data = data[meth_foff:meth_foff+meth_sz]
+        idx = meth_data.find(target_sel)
+        if idx >= 0:
+            sel_vm = meth_vm + idx
+            print(f'  {target_sel.decode()}: selector vm=0x{sel_vm:x}')
+            
+            # Now find the selref pointer in __objc_selrefs pointing to it
+            for i in range(0, selref_sz, 8):
+                ptr = struct.unpack_from('<Q', selref_data, i)[0]
+                if ptr == sel_vm:
+                    ref_vm = selref_vm + i
+                    print(f'    selref at vm=0x{ref_vm:x}')
+
+# ObjC method list
+print()
+print('=== ObjC Method Implementation Resolution ===')
+
+# __objc_classlist
+clslist_vm, clslist_foff, clslist_sz = sections[('__TEXT', '__objc_classlist')]
+cls_ptrs = []
+for i in range(0, clslist_sz, 8):
+    cls_ptrs.append(struct.unpack_from('<Q', data, clslist_foff + i)[0])
+
+# __objc_const
+const_vm, const_foff, const_sz = sections[('__TEXT', '__objc_const')]
+
+# Parse each class
+found_methods = {}
+for cls_vm in cls_ptrs:
+    cls_file = vm_to_file(cls_vm)
+    if cls_file is None or cls_file < 0: continue
+    
+    # ObjC class: isa(8), super(8), method_list_ptr(8) @ offset 32
+    ml_ptr = struct.unpack_from('<Q', data, cls_file + 32)[0]
+    if ml_ptr == 0: continue
+    
+    ml_file = vm_to_file(ml_ptr)
+    if ml_file is None: continue
+    
+    # method_list_t: entsize(4), count(4), first method desc
+    entsize = struct.unpack_from('<I', data, ml_file)[0]
+    count = struct.unpack_from('<I', data, ml_file + 4)[0]
+    
+    # Each method desc: name_off(4), imp_off(4), type_off(4) — but this is __objc_const format
+    # Actually in __objc_const: SEL(8), IMP(8), types(8) — 3 pointers
+    # Let's check
+    stride = entsize
+    
+    for i in range(count):
+        off = ml_file + 8 + i * stride
+        sel_ptr = struct.unpack_from('<Q', data, off)[0]
+        imp_ptr = struct.unpack_from('<Q', data, off + 8)[0]
+        
+        sel_file = vm_to_file(sel_ptr)
+        if sel_file is None: continue
+        
+        # Read selector string (null terminated)
+        sel_name = b''
+        j = sel_file
+        while j < len(data) and data[j] != 0 and len(sel_name) < 100:
+            sel_name += bytes([data[j]])
+            j += 1
+        
+        sel_str = sel_name.decode('ascii', errors='ignore')
+        
+        if any(k in sel_str for k in ['Activate', 'Machine', 'CarrierCode', 'bootstrap', 'LockCarrier']):
+            found_methods[sel_str] = imp_ptr
+            print(f'  [{sel_str}] IMP vm=0x{imp_ptr:x}')
+
+print()
+print('=== Capstone Disassembly of Key Functions ===')
+
+md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
+md.detail = True
+
+for sel_name, imp_vm in found_methods.items():
+    if any(k in sel_name for k in ['calculateCorrectActivateCode', 'getFixedMachineCode', 'getCarrierCodeSuffix', 'getCorrectActivateCode', 'copyMachineCode']):
+        imp_file = vm_to_file(imp_vm)
+        if imp_file is None: continue
+        
+        # Find function size by looking for ret + following stp/lsp patterns
+        # Simple heuristic: disassemble until we see 2 ret instructions or 500 instructions
+        max_instr = 500
+        code = data[imp_file:imp_file + max_instr * 4]
+        
+        print(f'\n{"="*70}')
+        print(f'Function: {sel_name} @ vm=0x{imp_vm:x}')
+        print(f'{"="*70}')
+        
+        for i, insn in enumerate(md.disasm(code, imp_vm)):
+            if i > 500: break
+            mark = ''
+            if insn.mnemonic == 'ret': mark = ' ◄─ ret'
+            if insn.mnemonic == 'blr': mark = ' ◄─ call'
+            print(f'  0x{insn.address:x}:\t{insn.mnemonic}\t{insn.op_str}{mark}')
+            if insn.mnemonic == 'ret' and i > 5: break  # end of function
+
+PYEOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lockipcc_reverse_v3
+          path: |
+            reverse_v3_output.txt
+
+      - name: Save final output
+        shell: bash
+        run: python3 << 'PYEOF' > reverse_v3_output.txt 2>&1
+import struct, re, sys
+from capstone import *
+
+with open('lockipcc_arm64e.macho', 'rb') as f:
+    data = f.read()
+
+BASE = 0x88000
+lc_total = struct.unpack_from('<I', data, BASE + 36)[0]
+lc_data = data[BASE + lc_total - lc_total : BASE + lc_total]
+# ... simplified - just dump method findings
+sections = {}
+pos = 0
+lc_data = data[BASE + struct.unpack_from('<I', data, BASE + 28)[0] :]
+total = struct.unpack_from('<I', data, BASE + 36)[0]
+lc_data = lc_data[:total]
+while pos < len(lc_data):
+    cmd = struct.unpack_from('<I', lc_data, pos)[0]
+    cmdsize = struct.unpack_from('<I', lc_data, pos+4)[0]
+    if cmd == 0x19:
+        nsects = struct.unpack_from('<I', lc_data, pos+64)[0]
+        sect_off = pos + 72
+        for i in range(nsects):
+            sect = lc_data[sect_off:sect_off+80]
+            sname = sect[0:16].rstrip(b'\x00').decode('ascii', errors='ignore')
+            seg = lc_data[pos+8:pos+24].rstrip(b'\x00').decode('ascii', errors='ignore')
+            vmaddr = struct.unpack_from('<Q', sect, 16)[0]
+            fileoff = struct.unpack_from('<Q', sect, 32)[0]
+            size = struct.unpack_from('<Q', sect, 40)[0]
+            sections[(seg, sname)] = (vmaddr, BASE + fileoff, size)
+            sect_off += 80
+    pos += cmdsize
+
+def vm_to_file(vmaddr):
+    for (seg, sn), (svm, soff, ssz) in sections.items():
+        if svm <= vmaddr < svm + ssz:
+            return soff + (vmaddr - svm)
+    return None
+
+print('Found sections:', list(sections.keys()))
+clslist_vm, clslist_foff, clslist_sz = sections.get(('__TEXT', '__objc_classlist'), (0,0,0))
+print(f'classlist: 0x{clslist_vm:x} file=0x{clslist_foff:x}')
+
+cls_ptrs = []
+for i in range(0, clslist_sz, 8):
+    cls_ptrs.append(struct.unpack_from('<Q', data, clslist_foff + i)[0])
+
+found = {}
+for cls_vm in cls_ptrs:
+    cls_file = vm_to_file(cls_vm)
+    if cls_file is None: continue
+    ml_ptr = struct.unpack_from('<Q', data, cls_file + 32)[0]
+    if ml_ptr == 0: continue
+    ml_file = vm_to_file(ml_ptr)
+    if ml_file is None: continue
+    entsize = struct.unpack_from('<I', data, ml_file)[0]
+    count = struct.unpack_from('<I', data, ml_file + 4)[0]
+    for i in range(count):
+        off = ml_file + 8 + i * entsize
+        sel_ptr = struct.unpack_from('<Q', data, off)[0]
+        imp_ptr = struct.unpack_from('<Q', data, off + 8)[0]
+        sel_file = vm_to_file(sel_ptr)
+        if sel_file is None: continue
+        sel_name = b''
+        j = sel_file
+        while j < len(data) and data[j] != 0 and len(sel_name) < 100:
+            sel_name += bytes([data[j]])
+            j += 1
+        sel_str = sel_name.decode('ascii', errors='ignore')
+        if any(k in sel_str for k in ['Activate', 'Machine', 'CarrierCode', 'bootstrap', 'LockCarrier', 'keychain']):
+            found[sel_str] = imp_ptr
+
+for k, v in found.items():
+    print(f'  [{k}] IMP=0x{v:x}')
+
+# Disassemble the calculation functions
+md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
+md.detail = True
+
+for sel_name, imp_vm in found.items():
+    if any(k in sel_name for k in ['calculateCorrectActivateCode', 'getFixedMachineCode', 'getCarrierCodeSuffix', 'getCorrectActivateCode', 'copyMachineCode']):
+        imp_file = vm_to_file(imp_vm)
+        if imp_file is None: continue
+        code = data[imp_file:imp_file + 2000]
+        print(f'\n{"="*70}')
+        print(f'[{sel_name}] @ 0x{imp_vm:x}')
+        print(f'{"="*70}')
+        for i, insn in enumerate(md.disasm(code, imp_vm)):
+            if i > 300: break
+            mark = ' ◄─ ret' if insn.mnemonic == 'ret' else ''
+            print(f'  0x{insn.address:x}:\t{insn.mnemonic}\t{insn.op_str}{mark}')
+            if insn.mnemonic == 'ret' and i > 3: break
+PYEOF
