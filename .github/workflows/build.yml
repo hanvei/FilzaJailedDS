@@ -104,7 +104,17 @@ jobs:
           git clone https://github.com/opa334/ChOma.git /tmp/ChOma --depth 1
           cd /tmp/ChOma
           export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:$PKG_CONFIG_PATH"
-          make DISABLE_TESTS=0 2>&1 | tail -30
+          # 1. Build library only (skips choma_sign etc that have API changes)
+          make DISABLE_TESTS=1 2>&1 | tail -10
+          echo "--- libchoma built ---"
+          ls -la output/lib/
+          # 2. Manually compile ct_bypass
+          OPENSSL_INC="$(brew --prefix openssl@3)/include"
+          OPENSSL_LIB="$(brew --prefix openssl@3)/lib"
+          CFLAGS="-Wall -Wno-implicit-function-declaration -Wno-deprecated-declarations -Wno-unused-command-line-argument -I$OPENSSL_INC -Ioutput/include -framework CoreFoundation -mmacosx-version-min=10.13"
+          LDFLAGS="-L$OPENSSL_LIB -lcrypto"
+          mkdir -p output/tests
+          clang $CFLAGS -o output/tests/ct_bypass tests/ct_bypass/main.c output/lib/libchoma.a $LDFLAGS 2>&1 | tail -30
           echo "--- ct_bypass binary ---"
           ls -la output/tests/ct_bypass
           file output/tests/ct_bypass
