@@ -22,7 +22,6 @@
 
 #pragma mark - Crash Protection
 
-#import signal.h>
 static volatile sig_atomic_t g_kexploit_crashed = 0;
 static void crash_handler(int sig) {
     g_kexploit_crashed = 1;
