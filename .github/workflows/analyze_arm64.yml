@@ -1,0 +1,37 @@
+name: Analyze arm64 slice
+
+on:
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@main
+
+      - name: Extract
+        run: |
+          unzip -o LockIPCC.ipa -d .
+          ls Payload/LockIPCC.app/LockIPCC
+
+      - name: lipo + otool
+        run: |
+          cd Payload/LockIPCC.app
+          echo "=== FAT info ==="
+          lipo -info LockIPCC
+          
+          echo ""
+          echo "=== arm64 slice sections ==="
+          otool -l LockIPCC | grep -A5 -E '(sectname __TEXT|sectname __objc|sectname __cstring|sectname __text|segname __TEXT|cmd LC_SEGMENT)' | head -80
+          
+          echo ""
+          echo "=== arm64 slice otool -Ov (objc) ==="
+          otool -arm64 -Ov LockIPCC 2>&1 | head -100
+          
+          echo ""
+          echo "=== Search isActivated in arm64 ==="
+          otool -arm64 -v -s __objc_selrefs __objc_selrefs LockIPCC 2>&1 | grep -A2 -i isactiv || echo "not in selrefs"
+          
+          echo ""
+          echo "=== strings search ==="
+          strings LockIPCC | grep -i activat | head -20
