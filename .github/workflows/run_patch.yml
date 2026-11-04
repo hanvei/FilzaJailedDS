@@ -14,26 +14,26 @@ jobs:
 
       - name: Extract IPA
         run: |
-          ls -la LockIPCC.ipa || { echo "ERROR: LockIPCC.ipa not found"; exit 1; }
-          rm -rf Payload *.app
           unzip -o LockIPCC.ipa -d .
-          echo "解压完成"
+          ls Payload/LockIPCC.app/LockIPCC
 
-      - name: Find + Patch Mach-O
+      - name: Apply ALL-patched binary
         run: |
-          APP_DIR=$(find . -maxdepth 4 -name "*.app" -type d | head -1)
-          echo "App: $APP_DIR"
-          BIN="$APP_DIR/LockIPCC"
-          cp "$BIN" "${BIN}.orig"
-          curl -fsSL https://raw.githubusercontent.com/hanvei/FilzaJailedDS/main/LockIPCC_patched -o LockIPCC_patched
-          cp LockIPCC_patched "$BIN"
-          chmod +x "$BIN"
-          echo "Patch done"
+          cp LockIPCC_all_patched Payload/LockIPCC.app/LockIPCC
+          chmod +x Payload/LockIPCC.app/LockIPCC
+          echo "=== 验证 patch ==="
+          python3 -c "
+with open('Payload/LockIPCC.app/LockIPCC','rb') as f: d=f.read()
+# 检查 isActivated
+checks = [0x9b548, 0x9b52c, 0x9c714, 0x9c6fe, 0x9c6f2, 0x9ad14, 0x9ad08]
+for off in checks:
+    patched = d[off:off+4] == bytes([0x20,0x00,0x80,0xD2]) or d[off+8:off+12] == bytes([0x01,0x00,0x00,0x14])
+    print(f'  0x{off:x}: {\"OK\" if patched else \"CHECK\"}')
+"
 
       - name: ldid sign
         run: |
-          APP_DIR=$(find . -maxdepth 4 -name "*.app" -type d | head -1)
-          find "$APP_DIR" -type f -executable | while read f; do
+          find Payload/LockIPCC.app -type f -executable | while read f; do
             ldid -S "$f" 2>/dev/null && echo "Signed: $f"
           done || true
 
