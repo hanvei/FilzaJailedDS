@@ -1,0 +1,36 @@
+name: Full RE dump
+
+on:
+  workflow_dispatch:
+
+jobs:
+  re:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@main
+
+      - name: Extract IPA
+        run: |
+          unzip -o LockIPCC.ipa -d .
+          cd Payload/LockIPCC.app
+
+      - name: Complete otool -ov arm64e (class -> methods -> IMP)
+        run: |
+          echo "=================== FULL arm64e otool -ov ==================="
+          otool -arch arm64e -ov LockIPCC > /tmp/re_arm64e.txt 2>&1 || true
+          wc -l /tmp/re_arm64e.txt
+          echo "=================== arm64e methods containing 'Activat' or 'activat' ==================="
+          grep -n -i activat /tmp/re_arm64e.txt | head -60
+          echo ""
+          echo "=================== ALL methods (names only) ==================="
+          grep -oE '^\s*0x[0-9a-f]+ [a-zA-Z0-9_:]+$' /tmp/re_arm64e.txt | head -300
+
+      - name: Include method dump
+        run: echo ok
+
+      - name: Upload RE dump
+        uses: actions/upload-artifact@v4
+        with:
+          name: re_dump
+          path: /tmp/re_arm64e.txt
+          retention-days: 30
