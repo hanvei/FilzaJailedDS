@@ -10,47 +10,55 @@ jobs:
       - uses: actions/checkout@main
 
       - name: Install ldid
-        run: |
-          brew install ldid 2>&1 | tail -3 || true
-
-      - name: Check IPA
-        run: |
-          ls -la LockIPCC.ipa || { echo "ERROR: LockIPCC.ipa not found"; exit 1; }
+        run: brew install ldid 2>&1 | tail -3 || true
 
       - name: Extract IPA
         run: |
+          ls -la LockIPCC.ipa || { echo "ERROR: LockIPCC.ipa not found"; exit 1; }
           rm -rf Payload *.app
           unzip -o LockIPCC.ipa -d .
-          find . -name "*.app" -type d
+          echo "=== 解压结果 ==="
+          ls -la Payload/
+          find . -maxdepth 3 -name "*.app" -print
 
-      - name: Find Mach-O
-        id: findbin
+      - name: Find + Patch Mach-O
         run: |
-          APP_DIR=$(find . -name "*.app" -type d | head -1)
-          BIN=$(find "$APP_DIR" -maxdepth 1 -type f -executable | xargs ls -lS | head -1 | awk '{print $NF}')
+          APP_DIR=$(find . -maxdepth 4 -name "*.app" -type d | head -1)
+          echo "App bundle: $APP_DIR"
+          [ -z "$APP_DIR" ] && { echo "ERROR: 找不到 .app"; exit 1; }
+          
+          BIN="$APP_DIR/LockIPCC"
           echo "Binary: $BIN"
+          ls -la "$BIN"
+          
+          if [ ! -f "$BIN" ]; then
+            echo "ERROR: $BIN not found"
+            ls -la "$APP_DIR/"
+            exit 1
+          fi
+          
           file "$BIN"
           lipo -info "$BIN"
-          echo "BIN=$BIN" >> $GITHUB_OUTPUT
-
-      - name: Apply isActivated patch
-        run: |
-          BIN="${{ steps.findbin.outputs.BIN }}"
+          
+          # 备份 + patch
           cp "$BIN" "${BIN}.orig"
           curl -fsSL https://raw.githubusercontent.com/hanvei/FilzaJailedDS/main/LockIPCC_patched -o LockIPCC_patched
           cp LockIPCC_patched "$BIN"
           chmod +x "$BIN"
-          echo "Patch applied to $BIN"
+          echo ""
+          echo "=== Patch 完成 ==="
+          echo "Patched file size: $(ls -l "$BIN" | awk '{print $5}')"
 
-      - name: Repack IPA
+      - name: ldid + codesign
+        run: |
+          APP_DIR=$(find . -maxdepth 4 -name "*.app" -type d | head -1)
+          ldid -S "$APP_DIR/LockIPCC" 2>/dev/null || true
+          find "$APP_DIR" -type f -executable 2>/dev/null | while read f; do
+            ldid -S "$f" 2>/dev/null && echo "  Signed: $(basename $f)"
+          done || true
+
+      - name: Repack + Upload
         run: |
           rm -f LockIPCC_patched.ipa
           zip -r LockIPCC_patched.ipa Payload/ -x "*.DS_Store"
           ls -la LockIPCC_patched.ipa
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: LockIPCC_patched_ipa
-          path: LockIPCC_patched.ipa
-          retention-days: 30
