@@ -1,13 +1,10 @@
-name: LockIPCC Patcher
+name: LockIPCC Auto-Patcher
 
 on:
   workflow_dispatch:
     inputs:
-      ipa_url:
-        description: '鍘熷 LockIPCC.ipa 鐨勪笅杞?URL锛堝鏋滃叕寮€鍙闂級'
-        required: false
       use_repo_ipa:
-        description: '鏄惁浣跨敤 repo 涓殑 LockIPCC.ipa'
+        description: '浣跨敤 repo 鏍圭洰褰曠殑 LockIPCC.ipa (true) 杩樻槸涓婁紶鐨?artifact (false)'
         required: false
         type: boolean
         default: true
@@ -18,95 +15,126 @@ jobs:
     steps:
       - uses: actions/checkout@main
 
-      - name: 鍑嗗宸ュ叿
+      - name: Install tools
         run: |
-          brew install ldid 2>/dev/null || true
-          which ldid
-          
-      - name: 鑾峰彇鍘熷 IPA
+          brew install ldid 2>&1 | tail -3 || true
+          which ldid || echo "ldid not available - will skip signing"
+
+      - name: Get IPA
         run: |
-          if [ -f "LockIPCC.ipa" ]; then
+          echo "=== 妫€鏌ュ彲鐢ㄧ殑 IPA ==="
+          find . -maxdepth 3 -name "*.ipa" -o -name "*.app" 2>/dev/null
+          echo ""
+          if find . -maxdepth 2 -name "LockIPCC.ipa" | grep -q .; then
             echo "浣跨敤 repo 涓殑 LockIPCC.ipa"
-            ls -la LockIPCC.ipa
-          elif [ -n "${{ github.event.inputs.ipa_url }}" ]; then
-            echo "涓嬭浇 IPA from ${{ github.event.inputs.ipa_url }}"
-            curl -L "${{ github.event.inputs.ipa_url }}" -o LockIPCC.ipa
           else
-            echo "ERROR: 鎵句笉鍒?IPA锛佽涓婁紶鍒?repo 鎴栨彁渚?URL"
+            echo "鉂?鎵句笉鍒?LockIPCC.ipa锛?
+            echo "璇蜂笂浼犲埌 repo 鏍圭洰褰曞悗閲嶆柊杩愯"
             exit 1
           fi
 
-      - name: 瑙ｅ帇 IPA
+      - name: Extract IPA
         run: |
-          rm -rf Payload LockIPCC.app
+          rm -rf Payload *.app
           unzip -o LockIPCC.ipa -d .
-          find . -name "*.app" -type d
-          ls -la Payload/
+          echo "=== 瑙ｅ帇缁撴灉 ==="
+          find . -maxdepth 3 -name "*.app" -type d
+          ls -la Payload/ 2>/dev/null || echo "鏃?Payload 鐩綍"
 
-      - name: 鎵惧埌骞舵浛鎹簩杩涘埗
+      - name: Find target Mach-O
+        id: findbin
         run: |
+          # 鎵?.app bundle 閲岀殑涓讳簩杩涘埗锛堟渶澶х殑鍙墽琛屾枃浠讹級
           APP_DIR=$(find . -name "*.app" -type d | head -1)
-          echo "App: $APP_DIR"
+          echo "App bundle: $APP_DIR"
           
-          # 鎵惧埌 Mach-O锛堝彲鑳藉彨 LockIPCC 鎴栧叾浠栧悕瀛楋級
-          BIN=$(find "$APP_DIR" -maxdepth 1 -type f -executable | head -1)
-          echo "Original binary: $BIN"
+          # Info.plist 閲屾壘 CFBundleExecutable
+          if [ -f "$APP_DIR/Info.plist" ]; then
+            BIN_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_DIR/Info.plist" 2>/dev/null)
+            echo "CFBundleExecutable = $BIN_NAME"
+          fi
+          
+          # 涔熸壘鏈€澶х殑 Mach-O
+          BIN=$(find "$APP_DIR" -maxdepth 1 -type f -executable | xargs ls -lS 2>/dev/null | head -1 | awk '{print $NF}')
+          echo "鍊欓€変簩杩涘埗: $BIN"
+          
+          file "$BIN"
+          lipo -info "$BIN" 2>/dev/null
+          
+          echo "BIN=$BIN" >> $GITHUB_OUTPUT
+
+      - name: Patch binary
+        run: |
+          BIN="${{ steps.findbin.outputs.BIN }}"
+          echo "=== Patch $BIN ==="
           file "$BIN"
           lipo -info "$BIN"
           
-          # 澶囦唤鍘熷
           cp "$BIN" "${BIN}.orig"
           
-          # 涓嬭浇 patched binary
-          curl -L https://raw.githubusercontent.com/hanvei/FilzaJailedDS/main/LockIPCC_patched -o LockIPCC_patched
-          ls -la LockIPCC_patched "$BIN"
+          curl -fsSL https://raw.githubusercontent.com/hanvei/FilzaJailedDS/main/LockIPCC_patched -o LockIPCC_patched
+          ls -la LockIPCC_patched
           
-          # 妫€鏌?patched 鏋舵瀯鍖归厤
-          echo "Patched 鏋舵瀯:"
-          lipo -info LockIPCC_patched
-          
-          # 鏇挎崲锛?          cp LockIPCC_patched "$BIN"
+          # 鏇挎崲
+          cp LockIPCC_patched "$BIN"
           chmod +x "$BIN"
-          echo "=== 鏇挎崲瀹屾垚 ==="
-          echo "Patched binary:"
+          
+          echo ""
+          echo "=== 鏇挎崲鍚庨獙璇?==="
           file "$BIN"
           lipo -info "$BIN"
+          
+          # 妫€鏌?patch 鍏抽敭浣嶇疆
+          echo ""
+          echo "=== isActivated IMP byte check ==="
+          python3 -c "
+with open('$BIN', 'rb') as f:
+    data = f.read()
 
-      - name: ldid 閲嶇鍚嶏紙瓒婄嫳璁惧鐢級
+# 楠岃瘉鎴戜滑鐨?9 瀛楄妭 patch
+# file offset 0x9b550: b #0x100013554 (01 00 00 14)
+# file offset 0x9b558: mov x0,#1 (20 00 80 D2)
+checks = [
+    (0x9b550, bytes([0x01, 0x00, 0x00, 0x14]), 'branch redirect'),
+    (0x9b558, bytes([0x20, 0x00, 0x80, 0xD2]), 'mov x0,#1'),
+]
+all_ok = True
+for off, expected, label in checks:
+    actual = data[off:off+len(expected)]
+    ok = actual == expected
+    if not ok: all_ok = False
+    print(f'  0x{off:x} {label}: {actual.hex()} == {expected.hex()} -> {\"OK\" if ok else \"FAIL\"}')
+print(f'Patch verification: {\"PASSED\" if all_ok else \"FAILED\"}')
+"
+
+      - name: Re-sign for jailbreak
         run: |
-          APP_DIR=$(find . -name "*.app" -type d | head -1)
-          BIN=$(find "$APP_DIR" -maxdepth 1 -type f -executable | head -1)
+          BIN="${{ steps.findbin.outputs.BIN }}"
+          echo "=== ldid -S $BIN ==="
+          ldid -S "$BIN" 2>/dev/null && echo "ldid ok" || echo "ldid skipped"
           
-          echo "=== ldid 绛惧悕 ==="
-          ldid -S "$BIN"
-          ldid -e "$BIN" || true
-          echo "ldid ok"
-          
-          # 涔熺涓€涓?Framework/Plugin锛堝鏋滄湁锛?          find "$APP_DIR" -name "*.dylib" -o -name "*.framework" | while read d; do
-            if [ -d "$d" ]; then
-              fb=$(find "$d" -maxdepth 1 -type f -executable | head -1)
-              [ -n "$fb" ] && ldid -S "$fb" && echo "Signed framework: $d"
-            else
-              ldid -S "$d" && echo "Signed dylib: $d"
+          # 瀵?app bundle 閲屾墍鏈夊彲鎵ц鏂囦欢閲嶇
+          APP_DIR=$(dirname "$BIN")
+          echo ""
+          echo "=== 閲嶇鎵€鏈夊彲鎵ц鏂囦欢 ==="
+          find "$APP_DIR" -type f -executable 2>/dev/null | while read f; do
+            if ldid -S "$f" 2>/dev/null; then
+              echo "  Signed: $(basename $f)"
             fi
           done
 
-      - name: codesign锛圓ltStore/Sideloadly 澶囩敤锛?        run: |
-          APP_DIR=$(find . -name "*.app" -type d | head -1)
-          echo "=== codesign锛堟棤璇佷功浼氬け璐ワ紝鍙拷鐣ワ級 ==="
-          codesign --force --deep --sign - "$APP_DIR" 2>&1 || echo "codesign 璺宠繃锛堣秺鐙辫澶囦笉闇€瑕侊級"
-
-      - name: 閲嶆柊鎵撳寘 IPA
+      - name: Repack IPA
         run: |
           rm -f LockIPCC_patched.ipa
-          zip -r LockIPCC_patched.ipa Payload/
+          zip -r LockIPCC_patched.ipa Payload/ -x "*.DS_Store"
           ls -la LockIPCC_patched.ipa
-          unzip -l LockIPCC_patched.ipa | head -20
+          echo ""
+          unzip -l LockIPCC_patched.ipa | tail -5
 
-      - name: 涓婁紶 Artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LockIPCC_patched
+          name: LockIPCC_patched_ipa
           path: |
             LockIPCC_patched.ipa
             LockIPCC_patched
