@@ -1,0 +1,30 @@
+name: Dump Objc via otool
+
+on:
+  workflow_dispatch:
+
+jobs:
+  d:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@main
+      - name: Extract
+        run: unzip -o LockIPCC.ipa -d . && cd Payload/LockIPCC.app
+
+      - name: otool full ObjC -oV
+        run: |
+          cd Payload/LockIPCC.app
+          echo "===== otool -oV (arm64e) ====="
+          otool -arch arm64e -oV LockIPCC 2>&1 | head -200
+          echo ""
+          echo "===== otool -tv activation funcs near 0x9b548 ====="
+          otool -arch arm64e -tv LockIPCC 2>&1 | sed -n '/100017548/,/100017570/p'
+          echo ""
+          echo "===== nm undefined import list ====="
+          nm -u LockIPCC 2>&1 | head -50
+
+      - name: Dump class rw + ro raw
+        run: |
+          cd Payload/LockIPCC.app
+          echo "===== classrefs raw ====="
+          otool -arch arm64e -s __DATA __objc_classlist LockIPCC 2>&1 | head -30
