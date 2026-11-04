@@ -17,48 +17,35 @@ jobs:
           ls -la LockIPCC.ipa || { echo "ERROR: LockIPCC.ipa not found"; exit 1; }
           rm -rf Payload *.app
           unzip -o LockIPCC.ipa -d .
-          echo "=== 解压结果 ==="
-          ls -la Payload/
-          find . -maxdepth 3 -name "*.app" -print
+          echo "解压完成"
 
       - name: Find + Patch Mach-O
         run: |
           APP_DIR=$(find . -maxdepth 4 -name "*.app" -type d | head -1)
-          echo "App bundle: $APP_DIR"
-          [ -z "$APP_DIR" ] && { echo "ERROR: 找不到 .app"; exit 1; }
-          
+          echo "App: $APP_DIR"
           BIN="$APP_DIR/LockIPCC"
-          echo "Binary: $BIN"
-          ls -la "$BIN"
-          
-          if [ ! -f "$BIN" ]; then
-            echo "ERROR: $BIN not found"
-            ls -la "$APP_DIR/"
-            exit 1
-          fi
-          
-          file "$BIN"
-          lipo -info "$BIN"
-          
-          # 备份 + patch
           cp "$BIN" "${BIN}.orig"
           curl -fsSL https://raw.githubusercontent.com/hanvei/FilzaJailedDS/main/LockIPCC_patched -o LockIPCC_patched
           cp LockIPCC_patched "$BIN"
           chmod +x "$BIN"
-          echo ""
-          echo "=== Patch 完成 ==="
-          echo "Patched file size: $(ls -l "$BIN" | awk '{print $5}')"
+          echo "Patch done"
 
-      - name: ldid + codesign
+      - name: ldid sign
         run: |
           APP_DIR=$(find . -maxdepth 4 -name "*.app" -type d | head -1)
-          ldid -S "$APP_DIR/LockIPCC" 2>/dev/null || true
-          find "$APP_DIR" -type f -executable 2>/dev/null | while read f; do
-            ldid -S "$f" 2>/dev/null && echo "  Signed: $(basename $f)"
+          find "$APP_DIR" -type f -executable | while read f; do
+            ldid -S "$f" 2>/dev/null && echo "Signed: $f"
           done || true
 
-      - name: Repack + Upload
+      - name: Repack IPA
         run: |
           rm -f LockIPCC_patched.ipa
           zip -r LockIPCC_patched.ipa Payload/ -x "*.DS_Store"
           ls -la LockIPCC_patched.ipa
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LockIPCC_patched_ipa
+          path: LockIPCC_patched.ipa
+          retention-days: 30
