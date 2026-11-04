@@ -1,0 +1,114 @@
+name: LockIPCC Patcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: '鍘熷 LockIPCC.ipa 鐨勪笅杞?URL锛堝鏋滃叕寮€鍙闂級'
+        required: false
+      use_repo_ipa:
+        description: '鏄惁浣跨敤 repo 涓殑 LockIPCC.ipa'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  patch:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@main
+
+      - name: 鍑嗗宸ュ叿
+        run: |
+          brew install ldid 2>/dev/null || true
+          which ldid
+          
+      - name: 鑾峰彇鍘熷 IPA
+        run: |
+          if [ -f "LockIPCC.ipa" ]; then
+            echo "浣跨敤 repo 涓殑 LockIPCC.ipa"
+            ls -la LockIPCC.ipa
+          elif [ -n "${{ github.event.inputs.ipa_url }}" ]; then
+            echo "涓嬭浇 IPA from ${{ github.event.inputs.ipa_url }}"
+            curl -L "${{ github.event.inputs.ipa_url }}" -o LockIPCC.ipa
+          else
+            echo "ERROR: 鎵句笉鍒?IPA锛佽涓婁紶鍒?repo 鎴栨彁渚?URL"
+            exit 1
+          fi
+
+      - name: 瑙ｅ帇 IPA
+        run: |
+          rm -rf Payload LockIPCC.app
+          unzip -o LockIPCC.ipa -d .
+          find . -name "*.app" -type d
+          ls -la Payload/
+
+      - name: 鎵惧埌骞舵浛鎹簩杩涘埗
+        run: |
+          APP_DIR=$(find . -name "*.app" -type d | head -1)
+          echo "App: $APP_DIR"
+          
+          # 鎵惧埌 Mach-O锛堝彲鑳藉彨 LockIPCC 鎴栧叾浠栧悕瀛楋級
+          BIN=$(find "$APP_DIR" -maxdepth 1 -type f -executable | head -1)
+          echo "Original binary: $BIN"
+          file "$BIN"
+          lipo -info "$BIN"
+          
+          # 澶囦唤鍘熷
+          cp "$BIN" "${BIN}.orig"
+          
+          # 涓嬭浇 patched binary
+          curl -L https://raw.githubusercontent.com/hanvei/FilzaJailedDS/main/LockIPCC_patched -o LockIPCC_patched
+          ls -la LockIPCC_patched "$BIN"
+          
+          # 妫€鏌?patched 鏋舵瀯鍖归厤
+          echo "Patched 鏋舵瀯:"
+          lipo -info LockIPCC_patched
+          
+          # 鏇挎崲锛?          cp LockIPCC_patched "$BIN"
+          chmod +x "$BIN"
+          echo "=== 鏇挎崲瀹屾垚 ==="
+          echo "Patched binary:"
+          file "$BIN"
+          lipo -info "$BIN"
+
+      - name: ldid 閲嶇鍚嶏紙瓒婄嫳璁惧鐢級
+        run: |
+          APP_DIR=$(find . -name "*.app" -type d | head -1)
+          BIN=$(find "$APP_DIR" -maxdepth 1 -type f -executable | head -1)
+          
+          echo "=== ldid 绛惧悕 ==="
+          ldid -S "$BIN"
+          ldid -e "$BIN" || true
+          echo "ldid ok"
+          
+          # 涔熺涓€涓?Framework/Plugin锛堝鏋滄湁锛?          find "$APP_DIR" -name "*.dylib" -o -name "*.framework" | while read d; do
+            if [ -d "$d" ]; then
+              fb=$(find "$d" -maxdepth 1 -type f -executable | head -1)
+              [ -n "$fb" ] && ldid -S "$fb" && echo "Signed framework: $d"
+            else
+              ldid -S "$d" && echo "Signed dylib: $d"
+            fi
+          done
+
+      - name: codesign锛圓ltStore/Sideloadly 澶囩敤锛?        run: |
+          APP_DIR=$(find . -name "*.app" -type d | head -1)
+          echo "=== codesign锛堟棤璇佷功浼氬け璐ワ紝鍙拷鐣ワ級 ==="
+          codesign --force --deep --sign - "$APP_DIR" 2>&1 || echo "codesign 璺宠繃锛堣秺鐙辫澶囦笉闇€瑕侊級"
+
+      - name: 閲嶆柊鎵撳寘 IPA
+        run: |
+          rm -f LockIPCC_patched.ipa
+          zip -r LockIPCC_patched.ipa Payload/
+          ls -la LockIPCC_patched.ipa
+          unzip -l LockIPCC_patched.ipa | head -20
+
+      - name: 涓婁紶 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LockIPCC_patched
+          path: |
+            LockIPCC_patched.ipa
+            LockIPCC_patched
+          if-no-files-found: error
+          retention-days: 30
