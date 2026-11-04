@@ -1,0 +1,56 @@
+name: Run LockIPCC Patcher
+
+on:
+  workflow_dispatch:
+
+jobs:
+  patch:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@main
+
+      - name: Install ldid
+        run: |
+          brew install ldid 2>&1 | tail -3 || true
+
+      - name: Check IPA
+        run: |
+          ls -la LockIPCC.ipa || { echo "ERROR: LockIPCC.ipa not found"; exit 1; }
+
+      - name: Extract IPA
+        run: |
+          rm -rf Payload *.app
+          unzip -o LockIPCC.ipa -d .
+          find . -name "*.app" -type d
+
+      - name: Find Mach-O
+        id: findbin
+        run: |
+          APP_DIR=$(find . -name "*.app" -type d | head -1)
+          BIN=$(find "$APP_DIR" -maxdepth 1 -type f -executable | xargs ls -lS | head -1 | awk '{print $NF}')
+          echo "Binary: $BIN"
+          file "$BIN"
+          lipo -info "$BIN"
+          echo "BIN=$BIN" >> $GITHUB_OUTPUT
+
+      - name: Apply isActivated patch
+        run: |
+          BIN="${{ steps.findbin.outputs.BIN }}"
+          cp "$BIN" "${BIN}.orig"
+          curl -fsSL https://raw.githubusercontent.com/hanvei/FilzaJailedDS/main/LockIPCC_patched -o LockIPCC_patched
+          cp LockIPCC_patched "$BIN"
+          chmod +x "$BIN"
+          echo "Patch applied to $BIN"
+
+      - name: Repack IPA
+        run: |
+          rm -f LockIPCC_patched.ipa
+          zip -r LockIPCC_patched.ipa Payload/ -x "*.DS_Store"
+          ls -la LockIPCC_patched.ipa
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LockIPCC_patched_ipa
+          path: LockIPCC_patched.ipa
+          retention-days: 30
