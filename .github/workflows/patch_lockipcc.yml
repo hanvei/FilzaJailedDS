@@ -1,13 +1,10 @@
 name: LockIPCC Auto-Patcher
 
 on:
+  push:
+    paths:
+      - 'LockIPCC.ipa'
   workflow_dispatch:
-    inputs:
-      use_repo_ipa:
-        description: '浣跨敤 repo 鏍圭洰褰曠殑 LockIPCC.ipa (true) 杩樻槸涓婁紶鐨?artifact (false)'
-        required: false
-        type: boolean
-        default: true
 
 jobs:
   patch:
@@ -22,105 +19,55 @@ jobs:
 
       - name: Get IPA
         run: |
-          echo "=== 妫€鏌ュ彲鐢ㄧ殑 IPA ==="
-          find . -maxdepth 3 -name "*.ipa" -o -name "*.app" 2>/dev/null
-          echo ""
-          if find . -maxdepth 2 -name "LockIPCC.ipa" | grep -q .; then
-            echo "浣跨敤 repo 涓殑 LockIPCC.ipa"
-          else
-            echo "鉂?鎵句笉鍒?LockIPCC.ipa锛?
-            echo "璇蜂笂浼犲埌 repo 鏍圭洰褰曞悗閲嶆柊杩愯"
-            exit 1
-          fi
+          echo "=== 检查 IPA ==="
+          ls -la LockIPCC.ipa || { echo "❌ 找不到 LockIPCC.ipa"; exit 1; }
 
       - name: Extract IPA
         run: |
           rm -rf Payload *.app
           unzip -o LockIPCC.ipa -d .
-          echo "=== 瑙ｅ帇缁撴灉 ==="
           find . -maxdepth 3 -name "*.app" -type d
-          ls -la Payload/ 2>/dev/null || echo "鏃?Payload 鐩綍"
 
       - name: Find target Mach-O
         id: findbin
         run: |
-          # 鎵?.app bundle 閲岀殑涓讳簩杩涘埗锛堟渶澶х殑鍙墽琛屾枃浠讹級
           APP_DIR=$(find . -name "*.app" -type d | head -1)
-          echo "App bundle: $APP_DIR"
-          
-          # Info.plist 閲屾壘 CFBundleExecutable
-          if [ -f "$APP_DIR/Info.plist" ]; then
-            BIN_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_DIR/Info.plist" 2>/dev/null)
-            echo "CFBundleExecutable = $BIN_NAME"
-          fi
-          
-          # 涔熸壘鏈€澶х殑 Mach-O
-          BIN=$(find "$APP_DIR" -maxdepth 1 -type f -executable | xargs ls -lS 2>/dev/null | head -1 | awk '{print $NF}')
-          echo "鍊欓€変簩杩涘埗: $BIN"
-          
+          echo "App: $APP_DIR"
+          BIN=$(find "$APP_DIR" -maxdepth 1 -type f -executable | xargs ls -lS | head -1 | awk '{print $NF}')
+          echo "Binary: $BIN"
           file "$BIN"
-          lipo -info "$BIN" 2>/dev/null
-          
+          lipo -info "$BIN"
           echo "BIN=$BIN" >> $GITHUB_OUTPUT
 
       - name: Patch binary
         run: |
           BIN="${{ steps.findbin.outputs.BIN }}"
           echo "=== Patch $BIN ==="
-          file "$BIN"
-          lipo -info "$BIN"
-          
           cp "$BIN" "${BIN}.orig"
-          
           curl -fsSL https://raw.githubusercontent.com/hanvei/FilzaJailedDS/main/LockIPCC_patched -o LockIPCC_patched
           ls -la LockIPCC_patched
-          
-          # 鏇挎崲
           cp LockIPCC_patched "$BIN"
           chmod +x "$BIN"
-          
           echo ""
-          echo "=== 鏇挎崲鍚庨獙璇?==="
-          file "$BIN"
-          lipo -info "$BIN"
-          
-          # 妫€鏌?patch 鍏抽敭浣嶇疆
-          echo ""
-          echo "=== isActivated IMP byte check ==="
+          echo "=== 验证 patch ==="
           python3 -c "
-with open('$BIN', 'rb') as f:
-    data = f.read()
-
-# 楠岃瘉鎴戜滑鐨?9 瀛楄妭 patch
-# file offset 0x9b550: b #0x100013554 (01 00 00 14)
-# file offset 0x9b558: mov x0,#1 (20 00 80 D2)
+with open('$BIN','rb') as f: d=f.read()
 checks = [
-    (0x9b550, bytes([0x01, 0x00, 0x00, 0x14]), 'branch redirect'),
-    (0x9b558, bytes([0x20, 0x00, 0x80, 0xD2]), 'mov x0,#1'),
+  (0x9b550, bytes([0x01,0x00,0x00,0x14]), 'branch redirect'),
+  (0x9b558, bytes([0x20,0x00,0x80,0xD2]), 'mov x0,#1'),
 ]
-all_ok = True
-for off, expected, label in checks:
-    actual = data[off:off+len(expected)]
-    ok = actual == expected
-    if not ok: all_ok = False
-    print(f'  0x{off:x} {label}: {actual.hex()} == {expected.hex()} -> {\"OK\" if ok else \"FAIL\"}')
-print(f'Patch verification: {\"PASSED\" if all_ok else \"FAILED\"}')
+for off, exp, label in checks:
+  ok = d[off:off+len(exp)] == exp
+  print(f'  0x{off:x} {label}: {\"OK\" if ok else \"FAIL\"}')
 "
 
       - name: Re-sign for jailbreak
         run: |
           BIN="${{ steps.findbin.outputs.BIN }}"
-          echo "=== ldid -S $BIN ==="
-          ldid -S "$BIN" 2>/dev/null && echo "ldid ok" || echo "ldid skipped"
-          
-          # 瀵?app bundle 閲屾墍鏈夊彲鎵ц鏂囦欢閲嶇
+          ldid -S "$BIN" 2>/dev/null && echo "ldid ok" || true
           APP_DIR=$(dirname "$BIN")
-          echo ""
-          echo "=== 閲嶇鎵€鏈夊彲鎵ц鏂囦欢 ==="
           find "$APP_DIR" -type f -executable 2>/dev/null | while read f; do
-            if ldid -S "$f" 2>/dev/null; then
-              echo "  Signed: $(basename $f)"
-            fi
+            ldid -S "$f" 2>/dev/null && echo "Signed: $(basename $f)"
           done
 
       - name: Repack IPA
@@ -128,15 +75,11 @@ print(f'Patch verification: {\"PASSED\" if all_ok else \"FAILED\"}')
           rm -f LockIPCC_patched.ipa
           zip -r LockIPCC_patched.ipa Payload/ -x "*.DS_Store"
           ls -la LockIPCC_patched.ipa
-          echo ""
-          unzip -l LockIPCC_patched.ipa | tail -5
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: LockIPCC_patched_ipa
-          path: |
-            LockIPCC_patched.ipa
-            LockIPCC_patched
+          path: LockIPCC_patched.ipa
           if-no-files-found: error
           retention-days: 30
